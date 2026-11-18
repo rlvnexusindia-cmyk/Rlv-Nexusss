@@ -1,0 +1,6 @@
+{
+  "name": "SwarMix DJ",
+  "description": "AI-curated dual-deck DJ mixing console and music discovery studio for Banger, Dance, Romance, Chill, Shaadi, 90s, Bhojpuri, Haryanvi, Punjabi, and Tamil hits.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
