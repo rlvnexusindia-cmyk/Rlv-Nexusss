@@ -166,9 +166,9 @@ async function fetchDirectSaavnTracks(
   try {
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) return [];
-    const payload = (await res.json()) as {
+    const payload = await safeParseApiJson<{
       data?: { results?: Array<Record<string, unknown>> };
-    };
+    }>(res);
     const results = Array.isArray(payload?.data?.results) ? payload.data.results : [];
 
     const tracks: Track[] = [];
@@ -262,8 +262,8 @@ async function fetchDirectAudiusTracks(
   try {
     const res = await fetch(url, { signal: controller.signal });
     if (!res.ok) return [];
-    const data = (await res.json()) as { data?: Array<Record<string, unknown>> };
-    const items = Array.isArray(data.data) ? data.data : [];
+    const data = await safeParseApiJson<{ data?: Array<Record<string, unknown>> }>(res);
+    const items = Array.isArray(data?.data) ? data.data : [];
 
     const tracks: Track[] = [];
     for (const item of items) {
