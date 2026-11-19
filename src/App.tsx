@@ -1007,6 +1007,30 @@ export default function App() {
                     masterVolume={masterVolume}
                     bangerMode={bangerMode}
                     isAnyPlaying={deckA.isPlaying || deckB.isPlaying || activeOfflineBeat !== null}
+                    activeDeck={
+                      activeOfflineBeat !== null
+                        ? 'MIX'
+                        : deckA.isPlaying && deckB.isPlaying && crossfade > 0.15 && crossfade < 0.85
+                          ? 'MIX'
+                          : deckA.isPlaying && !deckB.isPlaying
+                            ? 'A'
+                            : deckB.isPlaying && !deckA.isPlaying
+                              ? 'B'
+                              : crossfade <= 0.5
+                                ? 'A'
+                                : 'B'
+                    }
+                    activeTrackTitle={
+                      activeOfflineBeat !== null
+                        ? `Offline Beat (${activeOfflineBeat})`
+                        : deckA.isPlaying && deckB.isPlaying && crossfade > 0.15 && crossfade < 0.85
+                          ? `${deckA.track?.title ?? 'Deck A'} × ${deckB.track?.title ?? 'Deck B'}`
+                          : deckA.isPlaying && !deckB.isPlaying
+                            ? deckA.track?.title ?? null
+                            : deckB.isPlaying && !deckA.isPlaying
+                              ? deckB.track?.title ?? null
+                              : (crossfade <= 0.5 ? deckA.track?.title : deckB.track?.title) ?? null
+                    }
                     isAutoTransitioning={isAutoTransitioning}
                     onCrossfadeChange={handleCrossfadeChange}
                     onMasterVolumeChange={handleMasterVolumeChange}

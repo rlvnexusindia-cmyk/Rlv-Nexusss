@@ -1,13 +1,15 @@
 import React from 'react';
 import { ArrowLeftRight, Flame, Volume2, Zap } from 'lucide-react';
 import type { DjFxType } from '../audio/djAudioEngine';
-import { SpectrumVisualizer } from './SpectrumVisualizer';
+import { AudioVisualizer, type ActiveVisualizerDeck } from './AudioVisualizer';
 
 interface MasterMixerProps {
   crossfade: number; // 0 (A) to 1 (B)
   masterVolume: number; // 0 to 1
   bangerMode: boolean;
   isAnyPlaying: boolean;
+  activeDeck: ActiveVisualizerDeck;
+  activeTrackTitle: string | null;
   isAutoTransitioning: boolean;
   onCrossfadeChange: (val: number) => void;
   onMasterVolumeChange: (val: number) => void;
@@ -21,6 +23,8 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
   masterVolume,
   bangerMode,
   isAnyPlaying,
+  activeDeck,
+  activeTrackTitle,
   isAutoTransitioning,
   onCrossfadeChange,
   onMasterVolumeChange,
@@ -57,8 +61,13 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
         </button>
       </div>
 
-      {/* Live Spectrum */}
-      <SpectrumVisualizer isAnyPlaying={isAnyPlaying} bangerMode={bangerMode} />
+      {/* Master Audio Visualizer above the crossfader */}
+      <AudioVisualizer
+        isAnyPlaying={isAnyPlaying}
+        bangerMode={bangerMode}
+        activeDeck={activeDeck}
+        activeTrackTitle={activeTrackTitle}
+      />
 
       {/* Crossfader */}
       <div className="rounded-xl border border-white/8 bg-[#090B10] p-3.5">

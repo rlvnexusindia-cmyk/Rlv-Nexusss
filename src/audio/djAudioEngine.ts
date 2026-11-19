@@ -2,6 +2,13 @@ import type { DeckEq, DeckId } from '../types/music';
 
 export type DjFxType = 'bass_drop' | 'airhorn' | 'riser' | 'scratch';
 
+export interface FrequencyEnergy {
+  bass: number;
+  mid: number;
+  high: number;
+  peak: number;
+}
+
 interface DeckAudioGraph {
   audio: HTMLAudioElement;
   source: MediaElementAudioSourceNode | null;
@@ -10,6 +17,9 @@ interface DeckAudioGraph {
   highFilter: BiquadFilterNode | null;
   sweepFilter: BiquadFilterNode | null;
   channelGain: GainNode | null;
+  analyser: AnalyserNode | null;
+  frequencyBuffer: Uint8Array<ArrayBuffer> | null;
+  timeDomainBuffer: Uint8Array<ArrayBuffer> | null;
   crossfadeGain: GainNode | null;
   volume: number;
 }
@@ -21,6 +31,7 @@ class DjAudioEngine {
   private bangerHighShelf: BiquadFilterNode | null = null;
   private analyser: AnalyserNode | null = null;
   private frequencyBuffer: Uint8Array<ArrayBuffer> | null = null;
+  private timeDomainBuffer: Uint8Array<ArrayBuffer> | null = null;
   private crossfadeValue = 0.5; // 0 = A, 0.5 = Center, 1 = B
   private masterVolume = 0.9;
   private bangerEnabled = false;
@@ -46,6 +57,9 @@ class DjAudioEngine {
       highFilter: null,
       sweepFilter: null,
       channelGain: null,
+      analyser: null,
+      frequencyBuffer: null,
+      timeDomainBuffer: null,
       crossfadeGain: null,
       volume: 0.9,
     };
@@ -70,9 +84,10 @@ class DjAudioEngine {
       this.masterGain.gain.value = this.masterVolume;
 
       this.analyser = this.ctx.createAnalyser();
-      this.analyser.fftSize = 128;
-      this.analyser.smoothingTimeConstant = 0.78;
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.76;
       this.frequencyBuffer = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
+      this.timeDomainBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
 
       this.bangerLowShelf.connect(this.bangerHighShelf);
       this.bangerHighShelf.connect(this.masterGain);
@@ -120,6 +135,10 @@ class DjAudioEngine {
       const channelGain = this.ctx.createGain();
       channelGain.gain.value = deck.volume;
 
+      const deckAnalyser = this.ctx.createAnalyser();
+      deckAnalyser.fftSize = 256;
+      deckAnalyser.smoothingTimeConstant = 0.76;
+
       const crossfadeGain = this.ctx.createGain();
       crossfadeGain.gain.value = 1;
 
@@ -128,7 +147,8 @@ class DjAudioEngine {
       midFilter.connect(highFilter);
       highFilter.connect(sweepFilter);
       sweepFilter.connect(channelGain);
-      channelGain.connect(crossfadeGain);
+      channelGain.connect(deckAnalyser);
+      deckAnalyser.connect(crossfadeGain);
       crossfadeGain.connect(this.bangerLowShelf);
 
       deck.source = source;
@@ -137,6 +157,9 @@ class DjAudioEngine {
       deck.highFilter = highFilter;
       deck.sweepFilter = sweepFilter;
       deck.channelGain = channelGain;
+      deck.analyser = deckAnalyser;
+      deck.frequencyBuffer = new Uint8Array(new ArrayBuffer(deckAnalyser.frequencyBinCount));
+      deck.timeDomainBuffer = new Uint8Array(new ArrayBuffer(deckAnalyser.fftSize));
       deck.crossfadeGain = crossfadeGain;
     } catch {
       // Fallback: audio element still plays directly via native output
@@ -261,10 +284,68 @@ class DjAudioEngine {
     this.bangerHighShelf.gain.setTargetAtTime(enabled ? 2.5 : 0, now, 0.05);
   }
 
+  public getMasterAnalyser(): AnalyserNode | null {
+    return this.analyser;
+  }
+
   public getFrequencyData(): Uint8Array | null {
     if (!this.analyser || !this.frequencyBuffer) return null;
     this.analyser.getByteFrequencyData(this.frequencyBuffer);
     return this.frequencyBuffer;
+  }
+
+  public getTimeDomainData(): Uint8Array | null {
+    if (!this.analyser || !this.timeDomainBuffer) return null;
+    this.analyser.getByteTimeDomainData(this.timeDomainBuffer);
+    return this.timeDomainBuffer;
+  }
+
+  public getDeckFrequencyData(deckId: DeckId): Uint8Array | null {
+    const deck = this.decks[deckId];
+    if (!deck.analyser || !deck.frequencyBuffer) return null;
+    deck.analyser.getByteFrequencyData(deck.frequencyBuffer);
+    return deck.frequencyBuffer;
+  }
+
+  public getDeckTimeDomainData(deckId: DeckId): Uint8Array | null {
+    const deck = this.decks[deckId];
+    if (!deck.analyser || !deck.timeDomainBuffer) return null;
+    deck.analyser.getByteTimeDomainData(deck.timeDomainBuffer);
+    return deck.timeDomainBuffer;
+  }
+
+  public getFrequencyEnergy(data: Uint8Array | null): FrequencyEnergy {
+    if (!data || data.length === 0) {
+      return { bass: 0, mid: 0, high: 0, peak: 0 };
+    }
+    const len = data.length;
+    const bassEnd = Math.min(len, 6);
+    const midEnd = Math.min(len, 28);
+    const highEnd = Math.min(len, 72);
+
+    let bassSum = 0;
+    let midSum = 0;
+    let highSum = 0;
+    let peak = 0;
+
+    for (let i = 0; i < highEnd; i++) {
+      const val = data[i];
+      if (val > peak) peak = val;
+      if (i < bassEnd) bassSum += val;
+      else if (i < midEnd) midSum += val;
+      else highSum += val;
+    }
+
+    const bass = bassEnd > 0 ? bassSum / (bassEnd * 255) : 0;
+    const midCount = Math.max(1, midEnd - bassEnd);
+    const highCount = Math.max(1, highEnd - midEnd);
+
+    return {
+      bass: Math.min(1, bass),
+      mid: Math.min(1, midSum / (midCount * 255)),
+      high: Math.min(1, highSum / (highCount * 255)),
+      peak: Math.min(1, peak / 255),
+    };
   }
 
   public async triggerFx(type: DjFxType): Promise<void> {

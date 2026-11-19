@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Download,
@@ -12,6 +12,7 @@ import {
   Sparkles,
   Volume2,
 } from 'lucide-react';
+import { djAudioEngine } from '../audio/djAudioEngine';
 import type { DeckEq, DeckState, Track } from '../types/music';
 
 interface DjDeckProps {
@@ -60,10 +61,94 @@ export const DjDeck: React.FC<DjDeckProps> = ({
   hasQueue,
 }) => {
   const [imgFailed, setImgFailed] = useState(false);
+  const deckCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const vinylHaloRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setImgFailed(false);
   }, [deck.track?.id]);
+
+  useEffect(() => {
+    const canvas = deckCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let rafId = 0;
+    const isDeckA = deck.deckId === 'A';
+    const barColor = isDeckA ? '#F59E0B' : '#38BDF8';
+    const waveColor = isDeckA ? '#FDE68A' : '#BAE6FD';
+
+    const draw = () => {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const freq = djAudioEngine.getDeckFrequencyData(deck.deckId);
+      const wave = djAudioEngine.getDeckTimeDomainData(deck.deckId);
+      const hasFreq = Boolean(freq && freq.length > 0 && freq.some((v) => v > 1));
+      const energy = hasFreq
+        ? djAudioEngine.getFrequencyEnergy(freq)
+        : { bass: 0, mid: 0, high: 0, peak: 0 };
+
+      if (vinylHaloRef.current) {
+        if (deck.isPlaying) {
+          const glowPx = Math.round(10 + energy.bass * 24);
+          const alpha = (0.18 + energy.bass * 0.42).toFixed(2);
+          vinylHaloRef.current.style.boxShadow = isDeckA
+            ? `0 0 ${glowPx}px rgba(245, 158, 11, ${alpha})`
+            : `0 0 ${glowPx}px rgba(56, 189, 248, ${alpha})`;
+        } else {
+          vinylHaloRef.current.style.boxShadow = 'none';
+        }
+      }
+
+      // Background bars from deck FFT
+      const barCount = 28;
+      const gap = 2;
+      const barW = (w - gap * (barCount - 1)) / barCount;
+      ctx.fillStyle = isDeckA ? 'rgba(245, 158, 11, 0.34)' : 'rgba(56, 189, 248, 0.34)';
+
+      for (let i = 0; i < barCount; i++) {
+        let ratio = 0.08;
+        if (deck.isPlaying && hasFreq && freq) {
+          const idx = Math.min(freq.length - 1, Math.floor((i / barCount) * (freq.length * 0.65)));
+          ratio = Math.max(0.08, freq[idx] / 255);
+        }
+        const barH = Math.max(2, ratio * (h - 4));
+        ctx.fillRect(i * (barW + gap), h - barH, barW, barH);
+      }
+
+      // Crisp live waveform overlay
+      const hasWave = Boolean(
+        deck.isPlaying && wave && wave.length > 0 && wave.some((v) => Math.abs(v - 128) > 1)
+      );
+      ctx.beginPath();
+      const midY = h / 2;
+      const steps = 64;
+      for (let i = 0; i < steps; i++) {
+        const x = (i / (steps - 1)) * w;
+        let offset = 0;
+        if (hasWave && wave) {
+          const idx = Math.floor((i / steps) * wave.length);
+          offset = ((wave[idx] - 128) / 128) * (midY - 3);
+        }
+        const y = Math.max(2, Math.min(h - 2, midY + offset));
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = deck.isPlaying ? waveColor : barColor;
+      ctx.globalAlpha = deck.isPlaying ? 0.92 : 0.25;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      rafId = requestAnimationFrame(draw);
+    };
+
+    rafId = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(rafId);
+  }, [deck.deckId, deck.isPlaying]);
 
   const isDeckA = deck.deckId === 'A';
   const accentText = isDeckA ? 'text-amber-400' : 'text-sky-400';
@@ -108,7 +193,8 @@ export const DjDeck: React.FC<DjDeckProps> = ({
         {/* Spinning Vinyl Platter */}
         <div className="relative shrink-0">
           <div
-            className={`relative flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center rounded-full border-2 ${ringBorder} bg-[#090B10] shadow-lg ${
+            ref={vinylHaloRef}
+            className={`relative flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center rounded-full border-2 ${ringBorder} bg-[#090B10] shadow-lg transition-shadow duration-75 ${
               deck.isPlaying ? 'animate-vinyl' : 'animate-vinyl-paused'
             }`}
           >
@@ -152,8 +238,19 @@ export const DjDeck: React.FC<DjDeckProps> = ({
             </p>
           )}
 
+          {/* Per-Deck Live Web Audio Waveform Strip */}
+          <div className="mt-2.5 overflow-hidden rounded-lg border border-white/6 bg-[#090B10] px-2 py-1">
+            <canvas
+              ref={deckCanvasRef}
+              width={260}
+              height={32}
+              className="h-8 w-full block"
+              aria-label={`Live Web Audio waveform for Deck ${deck.deckId}`}
+            />
+          </div>
+
           {/* Seek & Timecode */}
-          <div className="mt-3">
+          <div className="mt-2.5">
             <div className="mb-1 flex items-center justify-between font-mono-tabular text-xs text-[#9CA3AF]">
               <span>{formatTime(deck.currentTime)}</span>
               <span>{formatTime(deck.duration)}</span>
