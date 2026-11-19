@@ -29,12 +29,20 @@ class DjAudioEngine {
   private masterGain: GainNode | null = null;
   private bangerLowShelf: BiquadFilterNode | null = null;
   private bangerHighShelf: BiquadFilterNode | null = null;
+  private spatialPanner: StereoPannerNode | null = null;
+  private spatialDepthFilter: BiquadFilterNode | null = null;
+  private spatialDelay: DelayNode | null = null;
+  private spatialWetFilter: BiquadFilterNode | null = null;
+  private spatialWetGain: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
   private frequencyBuffer: Uint8Array<ArrayBuffer> | null = null;
   private timeDomainBuffer: Uint8Array<ArrayBuffer> | null = null;
   private crossfadeValue = 0.5; // 0 = A, 0.5 = Center, 1 = B
   private masterVolume = 0.9;
   private bangerEnabled = false;
+  private is8dEnabled = false;
+  private spatialTimer: number | null = null;
+  private spatialAngle = 0;
 
   private decks: Record<DeckId, DeckAudioGraph>;
 
@@ -80,6 +88,25 @@ class DjAudioEngine {
       this.bangerHighShelf.frequency.value = 9000;
       this.bangerHighShelf.gain.value = this.bangerEnabled ? 2.5 : 0;
 
+      // 8D Spatial Panning & 3D Hall Depth Bus
+      this.spatialPanner = this.ctx.createStereoPanner();
+      this.spatialPanner.pan.value = 0;
+
+      this.spatialDepthFilter = this.ctx.createBiquadFilter();
+      this.spatialDepthFilter.type = 'lowpass';
+      this.spatialDepthFilter.frequency.value = 20000;
+      this.spatialDepthFilter.Q.value = 0.7;
+
+      this.spatialDelay = this.ctx.createDelay(0.2);
+      this.spatialDelay.delayTime.value = 0.036;
+
+      this.spatialWetFilter = this.ctx.createBiquadFilter();
+      this.spatialWetFilter.type = 'lowpass';
+      this.spatialWetFilter.frequency.value = 2800;
+
+      this.spatialWetGain = this.ctx.createGain();
+      this.spatialWetGain.gain.value = this.is8dEnabled ? 0.28 : 0;
+
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = this.masterVolume;
 
@@ -90,13 +117,25 @@ class DjAudioEngine {
       this.timeDomainBuffer = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
 
       this.bangerLowShelf.connect(this.bangerHighShelf);
-      this.bangerHighShelf.connect(this.masterGain);
+      this.bangerHighShelf.connect(this.spatialPanner);
+      this.spatialPanner.connect(this.spatialDepthFilter);
+      this.spatialDepthFilter.connect(this.masterGain);
+
+      // 8D spacious stereo ambience parallel send
+      this.spatialPanner.connect(this.spatialDelay);
+      this.spatialDelay.connect(this.spatialWetFilter);
+      this.spatialWetFilter.connect(this.spatialWetGain);
+      this.spatialWetGain.connect(this.masterGain);
+
       this.masterGain.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
 
       this.wireDeckToGraph('A');
       this.wireDeckToGraph('B');
       this.applyCrossfade();
+      if (this.is8dEnabled) {
+        this.start8dLoop();
+      }
     }
 
     if (this.ctx.state === 'suspended') {
@@ -173,15 +212,24 @@ class DjAudioEngine {
   public async loadAndPlay(deckId: DeckId, audioUrl: string, pitch = 1, loop = false): Promise<void> {
     await this.ensureContext();
     const deck = this.decks[deckId];
-    deck.audio.src = audioUrl;
+    if (deck.audio.src !== audioUrl) {
+      deck.audio.src = audioUrl;
+      deck.audio.load();
+    }
     deck.audio.loop = loop;
     deck.audio.playbackRate = pitch;
-    deck.audio.currentTime = 0;
+    try {
+      deck.audio.currentTime = 0;
+    } catch {
+      // Ignore InvalidStateError before metadata settles
+    }
+    this.applyCrossfade();
     await deck.audio.play();
   }
 
   public async play(deckId: DeckId): Promise<void> {
     await this.ensureContext();
+    this.applyCrossfade();
     await this.decks[deckId].audio.play();
   }
 
@@ -282,6 +330,42 @@ class DjAudioEngine {
     const now = this.ctx.currentTime;
     this.bangerLowShelf.gain.setTargetAtTime(enabled ? 6.5 : 0, now, 0.05);
     this.bangerHighShelf.gain.setTargetAtTime(enabled ? 2.5 : 0, now, 0.05);
+  }
+
+  private start8dLoop(): void {
+    if (this.spatialTimer !== null) {
+      window.clearInterval(this.spatialTimer);
+    }
+    this.spatialTimer = window.setInterval(() => {
+      if (!this.ctx || !this.spatialPanner || !this.spatialDepthFilter || !this.is8dEnabled) return;
+      this.spatialAngle = (this.spatialAngle + 0.042) % (Math.PI * 2);
+      const pan = Math.sin(this.spatialAngle) * 0.94;
+      const rearFactor = (1 - Math.cos(this.spatialAngle)) * 0.5; // 0 in front, 1 behind head
+      const cutoff = 18500 - rearFactor * 10500;
+      const now = this.ctx.currentTime;
+      this.spatialPanner.pan.setTargetAtTime(pan, now, 0.035);
+      this.spatialDepthFilter.frequency.setTargetAtTime(cutoff, now, 0.045);
+    }, 30);
+  }
+
+  public set8dMode(enabled: boolean): void {
+    this.is8dEnabled = enabled;
+    if (!enabled && this.spatialTimer !== null) {
+      window.clearInterval(this.spatialTimer);
+      this.spatialTimer = null;
+    }
+    if (!this.ctx || !this.spatialPanner || !this.spatialDepthFilter || !this.spatialWetGain) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    if (enabled) {
+      this.spatialWetGain.gain.setTargetAtTime(0.28, now, 0.08);
+      this.start8dLoop();
+    } else {
+      this.spatialPanner.pan.setTargetAtTime(0, now, 0.06);
+      this.spatialDepthFilter.frequency.setTargetAtTime(20000, now, 0.06);
+      this.spatialWetGain.gain.setTargetAtTime(0, now, 0.08);
+    }
   }
 
   public getMasterAnalyser(): AnalyserNode | null {

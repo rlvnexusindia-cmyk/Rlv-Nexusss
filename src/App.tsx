@@ -91,7 +91,10 @@ export default function App() {
   const [crossfade, setCrossfade] = useState<number>(0);
   const [masterVolume, setMasterVolume] = useState<number>(0.9);
   const [bangerMode, setBangerMode] = useState<boolean>(true);
+  const [is8dEnabled, setIs8dEnabled] = useState<boolean>(false);
   const [autoMixEnabled, setAutoMixEnabled] = useState<boolean>(true);
+  const [autoDj20s, setAutoDj20s] = useState<boolean>(false);
+  const [autoDjCountdown, setAutoDjCountdown] = useState<number>(20);
   const [isAutoTransitioning, setIsAutoTransitioning] = useState<boolean>(false);
 
   const [mobileDeckTab, setMobileDeckTab] = useState<'A' | 'MIXER' | 'B'>('A');
@@ -136,6 +139,10 @@ export default function App() {
   crossfadeRef.current = crossfade;
   const autoMixRef = useRef(autoMixEnabled);
   autoMixRef.current = autoMixEnabled;
+  const isAutoTransitioningRef = useRef(isAutoTransitioning);
+  isAutoTransitioningRef.current = isAutoTransitioning;
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
   const queueRef = useRef(queue);
   queueRef.current = queue;
   const deckARef = useRef(deckA);
@@ -143,6 +150,7 @@ export default function App() {
   const deckBRef = useRef(deckB);
   deckBRef.current = deckB;
   const transitionRafRef = useRef<number>(0);
+  const autoDjCutCountRef = useRef<number>(0);
   const deckObjectUrlRef = useRef<Record<DeckId, string | null>>({ A: null, B: null });
 
   const updateDeck = useCallback((deckId: DeckId, updater: (prev: DeckState) => DeckState) => {
@@ -196,6 +204,17 @@ export default function App() {
         try {
           djAudioEngine.stopOfflineBeat();
           setActiveOfflineBeat(null);
+          if (deckId === 'B' && crossfadeRef.current < 0.15) {
+            const nextCf = deckARef.current.isPlaying ? 0.5 : 1;
+            setCrossfade(nextCf);
+            crossfadeRef.current = nextCf;
+            djAudioEngine.setCrossfader(nextCf);
+          } else if (deckId === 'A' && crossfadeRef.current > 0.85) {
+            const nextCf = deckBRef.current.isPlaying ? 0.5 : 0;
+            setCrossfade(nextCf);
+            crossfadeRef.current = nextCf;
+            djAudioEngine.setCrossfader(nextCf);
+          }
           await djAudioEngine.loadAndPlay(deckId, sourceUrl, pitchToUse, currentDeck.loop);
           djAudioEngine.setDeckEq(deckId, currentDeck.eq);
           djAudioEngine.setChannelVolume(deckId, currentDeck.volume);
@@ -237,9 +256,9 @@ export default function App() {
         }
       } else {
         audio.src = sourceUrl;
+        audio.load();
         audio.playbackRate = pitchToUse;
         audio.loop = currentDeck.loop;
-        audio.currentTime = 0;
         updateDeck(deckId, (prev) => ({
           ...prev,
           isPlaying: false,
@@ -253,11 +272,27 @@ export default function App() {
   const handleCrossfadeChange = useCallback((val: number) => {
     const clamped = Math.max(0, Math.min(1, val));
     setCrossfade(clamped);
+    crossfadeRef.current = clamped;
     djAudioEngine.setCrossfader(clamped);
   }, []);
 
+  const pullNextTrackForDeck = useCallback((avoidIds: Set<string>): Track | null => {
+    if (queueRef.current.length > 0) {
+      const [nextTrack, ...rest] = queueRef.current;
+      queueRef.current = rest;
+      setQueue(rest);
+      return nextTrack;
+    }
+    const pool = tracksRef.current.filter((t) => !avoidIds.has(t.id) && !isMarathiTrackMeta(t));
+    if (pool.length > 0) {
+      return pool[Math.floor(Math.random() * Math.min(pool.length, 10))];
+    }
+    const anyTrack = tracksRef.current.find((t) => !isMarathiTrackMeta(t));
+    return anyTrack ?? null;
+  }, []);
+
   const triggerSmoothCrossfade = useCallback(
-    async (targetDeckId?: DeckId, durationMs = 3200) => {
+    async (targetDeckId?: DeckId, durationMs = 3000, mashupCut = false) => {
       if (transitionRafRef.current) {
         cancelAnimationFrame(transitionRafRef.current);
       }
@@ -268,21 +303,45 @@ export default function App() {
       const endCrossfade = toDeck === 'A' ? 0 : 1;
 
       const targetState = toDeck === 'A' ? deckARef.current : deckBRef.current;
+      const sourceState = fromDeck === 'A' ? deckARef.current : deckBRef.current;
 
-      if (!targetState.track && queueRef.current.length > 0) {
-        const [nextTrack, ...rest] = queueRef.current;
-        setQueue(rest);
-        await loadTrackToDeck(toDeck, nextTrack, true);
-      } else if (targetState.track && !targetState.isPlaying) {
+      const avoid = new Set<string>();
+      if (sourceState.track?.id) avoid.add(sourceState.track.id);
+      if (targetState.track?.id) avoid.add(targetState.track.id);
+
+      let activeIncomingTrack = targetState.track;
+      if (!activeIncomingTrack) {
+        const nextTrack = pullNextTrackForDeck(avoid);
+        if (nextTrack) {
+          activeIncomingTrack = nextTrack;
+          await loadTrackToDeck(toDeck, nextTrack, true);
+        }
+      } else if (!targetState.isPlaying) {
         try {
           await djAudioEngine.play(toDeck);
           updateDeck(toDeck, (p) => ({ ...p, isPlaying: true, error: null }));
         } catch {
-          // Ignore play failure during transition
+          await loadTrackToDeck(toDeck, activeIncomingTrack, true);
+        }
+      }
+
+      if (mashupCut && activeIncomingTrack) {
+        const audio = djAudioEngine.getAudioElement(toDeck);
+        const dur = activeIncomingTrack.durationSec || audio.duration || 180;
+        const dropCueSec = dur >= 90 ? Math.min(42, Math.round(dur * 0.24)) : Math.min(18, Math.round(dur * 0.2));
+        if (audio.currentTime < 6 && Number.isFinite(dropCueSec) && dropCueSec > 0) {
+          djAudioEngine.seek(toDeck, dropCueSec);
+        }
+        autoDjCutCountRef.current += 1;
+        if (autoDjCutCountRef.current % 2 === 1) {
+          void djAudioEngine.triggerFx('riser');
+        } else {
+          void djAudioEngine.triggerFx('bass_drop');
         }
       }
 
       setIsAutoTransitioning(true);
+      isAutoTransitioningRef.current = true;
       const startTime = performance.now();
 
       const step = (now: number) => {
@@ -292,16 +351,32 @@ export default function App() {
         const currentVal = startCrossfade + (endCrossfade - startCrossfade) * eased;
         handleCrossfadeChange(currentVal);
 
+        // Smooth DJ high-pass exit sweep + bass swap during mashup cut
+        if (mashupCut) {
+          const outEq = fromDeck === 'A' ? deckARef.current.eq : deckBRef.current.eq;
+          djAudioEngine.setDeckEq(fromDeck, {
+            ...outEq,
+            low: Math.max(-10, outEq.low - eased * 8),
+            filter: Math.min(0.65, eased * 0.65),
+          });
+        }
+
         if (t < 1) {
           transitionRafRef.current = requestAnimationFrame(step);
         } else {
           setIsAutoTransitioning(false);
+          isAutoTransitioningRef.current = false;
           djAudioEngine.pause(fromDeck);
-          updateDeck(fromDeck, (p) => ({ ...p, isPlaying: false }));
+          const restoredEq = fromDeck === 'A' ? deckARef.current.eq : deckBRef.current.eq;
+          djAudioEngine.setDeckEq(fromDeck, { ...restoredEq, filter: 0 });
+          updateDeck(fromDeck, (p) => ({ ...p, isPlaying: false, eq: { ...p.eq, filter: 0 } }));
 
-          if (queueRef.current.length > 0) {
-            const [upcoming, ...remaining] = queueRef.current;
-            setQueue(remaining);
+          const nextAvoid = new Set<string>();
+          const currentTarget = toDeck === 'A' ? deckARef.current : deckBRef.current;
+          if (currentTarget.track?.id) nextAvoid.add(currentTarget.track.id);
+          if (sourceState.track?.id) nextAvoid.add(sourceState.track.id);
+          const upcoming = pullNextTrackForDeck(nextAvoid);
+          if (upcoming) {
             void loadTrackToDeck(fromDeck, upcoming, false);
           }
         }
@@ -309,7 +384,7 @@ export default function App() {
 
       transitionRafRef.current = requestAnimationFrame(step);
     },
-    [handleCrossfadeChange, loadTrackToDeck, updateDeck]
+    [handleCrossfadeChange, loadTrackToDeck, pullNextTrackForDeck, updateDeck]
   );
 
   // Sync HTMLAudioElement events
@@ -412,6 +487,35 @@ export default function App() {
   useEffect(() => {
     djAudioEngine.setBangerMode(bangerMode);
   }, [bangerMode]);
+
+  useEffect(() => {
+    djAudioEngine.set8dMode(is8dEnabled);
+  }, [is8dEnabled]);
+
+  useEffect(() => {
+    if (!autoDj20s) {
+      setAutoDjCountdown(20);
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (isAutoTransitioningRef.current) return;
+      const playingA = deckARef.current.isPlaying;
+      const playingB = deckBRef.current.isPlaying;
+      if (!playingA && !playingB) return;
+
+      setAutoDjCountdown((prev) => {
+        if (prev <= 1) {
+          const toDeck: DeckId = crossfadeRef.current <= 0.5 ? 'B' : 'A';
+          void triggerSmoothCrossfade(toDeck, 2600, true);
+          return 20;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [autoDj20s, triggerSmoothCrossfade]);
 
   useEffect(() => {
     void getOfflineTracks().then((saved) => setOfflineTracks(saved));
@@ -633,13 +737,25 @@ export default function App() {
       try {
         djAudioEngine.stopOfflineBeat();
         setActiveOfflineBeat(null);
+
+        // Automatically bring Deck B (or Deck A) into audible crossfade range when user hits Play
+        if (deckId === 'B' && crossfadeRef.current < 0.15) {
+          handleCrossfadeChange(deckARef.current.isPlaying ? 0.5 : 1);
+        } else if (deckId === 'A' && crossfadeRef.current > 0.85) {
+          handleCrossfadeChange(deckBRef.current.isPlaying ? 0.5 : 0);
+        }
+
         const audio = djAudioEngine.getAudioElement(deckId);
-        if (!audio.src) {
+        if (!audio.src || audio.error) {
           await loadTrackToDeck(deckId, state.track, true);
         } else {
-          await djAudioEngine.play(deckId);
-          djAudioEngine.setDeckEq(deckId, state.eq);
-          djAudioEngine.setChannelVolume(deckId, state.volume);
+          try {
+            await djAudioEngine.play(deckId);
+            djAudioEngine.setDeckEq(deckId, state.eq);
+            djAudioEngine.setChannelVolume(deckId, state.volume);
+          } catch {
+            await loadTrackToDeck(deckId, state.track, true);
+          }
         }
       } catch (err) {
         updateDeck(deckId, (prev) => ({
@@ -648,6 +764,28 @@ export default function App() {
         }));
       }
     }
+  };
+
+  const handleToggleAutoDj20s = () => {
+    setAutoDj20s((prev) => {
+      const next = !prev;
+      if (next) {
+        setAutoMixEnabled(true);
+        setAutoDjCountdown(20);
+        const playingA = deckARef.current.isPlaying;
+        const playingB = deckBRef.current.isPlaying;
+        if (!playingA && !playingB) {
+          if (deckARef.current.track) {
+            handleCrossfadeChange(0);
+            void loadTrackToDeck('A', deckARef.current.track, true);
+          } else if (deckBRef.current.track) {
+            handleCrossfadeChange(1);
+            void loadTrackToDeck('B', deckBRef.current.track, true);
+          }
+        }
+      }
+      return next;
+    });
   };
 
   const handleCueRestart = async (deckId: DeckId) => {
@@ -925,6 +1063,18 @@ export default function App() {
                   </span>
                   <span aria-hidden="true"> · </span>
                   <span>{bangerMode ? 'Bass Boost Active' : 'Balanced Studio EQ'}</span>
+                  {autoDj20s && (
+                    <>
+                      <span aria-hidden="true"> · </span>
+                      <span className="text-emerald-400">Auto DJ 20s ({autoDjCountdown}s)</span>
+                    </>
+                  )}
+                  {is8dEnabled && (
+                    <>
+                      <span aria-hidden="true"> · </span>
+                      <span className="text-sky-400">8D Spatial</span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1006,6 +1156,9 @@ export default function App() {
                     crossfade={crossfade}
                     masterVolume={masterVolume}
                     bangerMode={bangerMode}
+                    is8dEnabled={is8dEnabled}
+                    autoDj20s={autoDj20s}
+                    autoDjCountdown={autoDjCountdown}
                     isAnyPlaying={deckA.isPlaying || deckB.isPlaying || activeOfflineBeat !== null}
                     activeDeck={
                       activeOfflineBeat !== null
@@ -1035,6 +1188,8 @@ export default function App() {
                     onCrossfadeChange={handleCrossfadeChange}
                     onMasterVolumeChange={handleMasterVolumeChange}
                     onToggleBangerMode={() => setBangerMode((b) => !b)}
+                    onToggle8dMode={() => setIs8dEnabled((v) => !v)}
+                    onToggleAutoDj20s={handleToggleAutoDj20s}
                     onTriggerCrossfadeMix={() => void triggerSmoothCrossfade()}
                     onTriggerFx={handleTriggerFx}
                   />

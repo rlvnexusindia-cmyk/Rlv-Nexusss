@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowLeftRight, Flame, Volume2, Zap } from 'lucide-react';
+import { ArrowLeftRight, Flame, Headphones, Radio, Volume2, Zap } from 'lucide-react';
 import type { DjFxType } from '../audio/djAudioEngine';
 import { AudioVisualizer, type ActiveVisualizerDeck } from './AudioVisualizer';
 
@@ -7,6 +7,9 @@ interface MasterMixerProps {
   crossfade: number; // 0 (A) to 1 (B)
   masterVolume: number; // 0 to 1
   bangerMode: boolean;
+  is8dEnabled: boolean;
+  autoDj20s: boolean;
+  autoDjCountdown: number;
   isAnyPlaying: boolean;
   activeDeck: ActiveVisualizerDeck;
   activeTrackTitle: string | null;
@@ -14,6 +17,8 @@ interface MasterMixerProps {
   onCrossfadeChange: (val: number) => void;
   onMasterVolumeChange: (val: number) => void;
   onToggleBangerMode: () => void;
+  onToggle8dMode: () => void;
+  onToggleAutoDj20s: () => void;
   onTriggerCrossfadeMix: () => void;
   onTriggerFx: (fx: DjFxType) => void;
 }
@@ -22,6 +27,9 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
   crossfade,
   masterVolume,
   bangerMode,
+  is8dEnabled,
+  autoDj20s,
+  autoDjCountdown,
   isAnyPlaying,
   activeDeck,
   activeTrackTitle,
@@ -29,6 +37,8 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
   onCrossfadeChange,
   onMasterVolumeChange,
   onToggleBangerMode,
+  onToggle8dMode,
+  onToggleAutoDj20s,
   onTriggerCrossfadeMix,
   onTriggerFx,
 }) => {
@@ -119,6 +129,39 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
           <ArrowLeftRight className="h-3.5 w-3.5" aria-hidden="true" />
           <span>{isAutoTransitioning ? 'Mixing Decks...' : 'Smooth Mix Switch (A ↔ B)'}</span>
         </button>
+
+        {/* Auto DJ 20s Cut Mashup & 8D Spatial Audio Controls */}
+        <div className="mt-2.5 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onToggleAutoDj20s}
+            aria-pressed={autoDj20s}
+            className={`flex min-h-[44px] sm:min-h-[38px] items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              autoDj20s
+                ? 'bg-emerald-400 text-[#090B10] hover:bg-emerald-300'
+                : 'border border-white/10 bg-[#1A1E28] text-[#E5E7EB] hover:bg-[#232836]'
+            }`}
+          >
+            <Radio className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              {autoDj20s ? `Auto DJ · ${autoDjCountdown}s` : 'Auto DJ (20s)'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggle8dMode}
+            aria-pressed={is8dEnabled}
+            className={`flex min-h-[44px] sm:min-h-[38px] items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+              is8dEnabled
+                ? 'bg-sky-400 text-[#090B10] hover:bg-sky-300'
+                : 'border border-white/10 bg-[#1A1E28] text-[#E5E7EB] hover:bg-[#232836]'
+            }`}
+          >
+            <Headphones className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>{is8dEnabled ? '8D Audio On' : '8D Audio'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Master Gain & Live FX Pads */}
