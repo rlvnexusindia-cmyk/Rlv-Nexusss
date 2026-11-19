@@ -12,6 +12,12 @@ import { QueuePanel } from './components/QueuePanel';
 import { TopBar, type AppView } from './components/TopBar';
 import { DJ_MODES } from './data/modes';
 import {
+  buildClientAiFilterFallback,
+  buildClientAiSuggestFallback,
+  fetchDirectCatalog,
+  safeParseApiJson,
+} from './services/clientCatalog';
+import {
   getOfflineAudioUrl,
   getOfflineTracks,
   removeOfflineTrack,
@@ -57,10 +63,27 @@ function createInitialDeck(deckId: DeckId): DeckState {
   };
 }
 
+function getInitialUrlState(): { view: AppView; mode: DjModeId } {
+  if (typeof window === 'undefined') {
+    return { view: 'home', mode: 'banger' };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const genreParam = params.get('genre') as DjModeId | null;
+  const viewParam = params.get('view');
+  const validMode =
+    genreParam && DJ_MODES.some((m) => m.id === genreParam) ? genreParam : 'banger';
+  const view: AppView =
+    viewParam === 'console' || (genreParam && DJ_MODES.some((m) => m.id === genreParam))
+      ? 'console'
+      : 'home';
+  return { view, mode: validMode };
+}
+
 export default function App() {
+  const [initialUrlState] = useState(getInitialUrlState);
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [initialReady, setInitialReady] = useState<boolean>(false);
-  const [activeView, setActiveView] = useState<AppView>('home');
+  const [activeView, setActiveView] = useState<AppView>(initialUrlState.view);
 
   const [deckA, setDeckA] = useState<DeckState>(() => createInitialDeck('A'));
   const [deckB, setDeckB] = useState<DeckState>(() => createInitialDeck('B'));
@@ -72,9 +95,11 @@ export default function App() {
   const [isAutoTransitioning, setIsAutoTransitioning] = useState<boolean>(false);
 
   const [mobileDeckTab, setMobileDeckTab] = useState<'A' | 'MIXER' | 'B'>('A');
-  const [mobileNavActive, setMobileNavActive] = useState<MobileNavTarget>('home');
+  const [mobileNavActive, setMobileNavActive] = useState<MobileNavTarget>(
+    initialUrlState.view === 'console' ? 'console' : 'home'
+  );
 
-  const [activeMode, setActiveMode] = useState<DjModeId>('banger');
+  const [activeMode, setActiveMode] = useState<DjModeId>(initialUrlState.mode);
   const [showOfflineTab, setShowOfflineTab] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -181,8 +206,28 @@ export default function App() {
             error: null,
           }));
         } catch (err) {
+          if (
+            track.previewUrl &&
+            sourceUrl.includes('/api/audio-proxy') &&
+            sourceUrl !== track.previewUrl
+          ) {
+            try {
+              await djAudioEngine.loadAndPlay(deckId, track.previewUrl, pitchToUse, currentDeck.loop);
+              djAudioEngine.setDeckEq(deckId, currentDeck.eq);
+              djAudioEngine.setChannelVolume(deckId, currentDeck.volume);
+              updateDeck(deckId, (prev) => ({
+                ...prev,
+                isPlaying: true,
+                isLoading: false,
+                error: null,
+              }));
+              return;
+            } catch {
+              // Fall through to standard error state
+            }
+          }
           const message =
-            err instanceof Error ? err.message : 'Unable to play this track preview.';
+            err instanceof Error ? err.message : 'Unable to stream this track right now.';
           updateDeck(deckId, (prev) => ({
             ...prev,
             isPlaying: false,
@@ -310,11 +355,31 @@ export default function App() {
       };
 
       const onError = () => {
+        const currentDeck = deckId === 'A' ? deckARef.current : deckBRef.current;
+        const directFallbackUrl = currentDeck.track?.previewUrl;
+        if (
+          directFallbackUrl &&
+          audio.src.includes('/api/audio-proxy') &&
+          audio.src !== directFallbackUrl
+        ) {
+          audio.src = directFallbackUrl;
+          audio.playbackRate = currentDeck.pitch;
+          audio.loop = currentDeck.loop;
+          void djAudioEngine.play(deckId).catch(() => {
+            updateDeck(deckId, (prev) => ({
+              ...prev,
+              isPlaying: false,
+              isLoading: false,
+              error: prev.track ? 'Unable to stream this track right now.' : null,
+            }));
+          });
+          return;
+        }
         updateDeck(deckId, (prev) => ({
           ...prev,
           isPlaying: false,
           isLoading: false,
-          error: prev.track ? 'Audio preview unavailable for this track.' : null,
+          error: prev.track ? 'Unable to stream this track right now.' : null,
         }));
       };
 
@@ -384,14 +449,32 @@ export default function App() {
       try {
         const params = new URLSearchParams({ genre: mode });
         if (q) params.set('q', q);
-        const res = await fetch(`/api/tracks?${params.toString()}`);
-        const data = (await res.json()) as { tracks?: Track[]; error?: string };
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to load songs from music API.');
+
+        let fetched: Track[] | null = null;
+        try {
+          const res = await fetch(`/api/tracks?${params.toString()}`);
+          const data = await safeParseApiJson<{
+            tracks?: Track[];
+            error?: string;
+            blocked?: boolean;
+          }>(res);
+
+          if (res.status === 403 && data?.blocked) {
+            throw new Error(data.error || 'Marathi songs are blocked on Rintu Bit DJ.');
+          }
+          if (res.ok && data && Array.isArray(data.tracks)) {
+            fetched = data.tracks.filter((t) => !isMarathiTrackMeta(t));
+          }
+        } catch (apiErr) {
+          if (apiErr instanceof Error && apiErr.message.includes('Marathi')) {
+            throw apiErr;
+          }
         }
-        const fetched = (Array.isArray(data.tracks) ? data.tracks : []).filter(
-          (t) => !isMarathiTrackMeta(t)
-        );
+
+        if (!fetched) {
+          fetched = (await fetchDirectCatalog(mode, q)).filter((t) => !isMarathiTrackMeta(t));
+        }
+
         setTracks(fetched);
 
         if (autoStageDecks && fetched.length > 0) {
@@ -412,8 +495,8 @@ export default function App() {
   );
 
   useEffect(() => {
-    void fetchTracks('banger', '', true, false);
-  }, [fetchTracks]);
+    void fetchTracks(initialUrlState.mode, '', true, false);
+  }, [fetchTracks, initialUrlState.mode]);
 
   const handleFetchAiSuggestions = useCallback(
     async (seedTrack?: Track | null) => {
@@ -436,11 +519,38 @@ export default function App() {
       ].filter((t): t is string => Boolean(t));
 
       try {
-        const res = await fetch('/api/ai/suggest', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            currentTrack: activeTrack
+        let resolved: AiSuggestResponse | null = null;
+        try {
+          const res = await fetch('/api/ai/suggest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              currentTrack: activeTrack
+                ? {
+                    title: activeTrack.title,
+                    artist: activeTrack.artist,
+                    genre: activeTrack.genre,
+                    bpm: activeTrack.bpm,
+                  }
+                : undefined,
+              activeMode,
+              recentTitles,
+            }),
+          });
+          const data = await safeParseApiJson<Partial<AiSuggestResponse> & { error?: string }>(res);
+          if (res.ok && data && Array.isArray(data.suggestions)) {
+            resolved = {
+              headline: data.headline || 'AI Suggested New Songs',
+              suggestions: data.suggestions,
+            };
+          }
+        } catch {
+          // Fall back to direct catalog suggestion matching
+        }
+
+        if (!resolved) {
+          resolved = await buildClientAiSuggestFallback(
+            activeTrack
               ? {
                   title: activeTrack.title,
                   artist: activeTrack.artist,
@@ -449,15 +559,12 @@ export default function App() {
                 }
               : undefined,
             activeMode,
-            recentTitles,
-          }),
-        });
-        const data = (await res.json()) as Partial<AiSuggestResponse> & { error?: string };
-        if (!res.ok || !Array.isArray(data.suggestions)) {
-          throw new Error(data.error || 'Could not generate AI song suggestions.');
+            recentTitles
+          );
         }
-        setSuggestHeadline(data.headline || 'AI Suggested New Songs');
-        setSuggestions(data.suggestions.filter((s) => !isMarathiTrackMeta(s.track)));
+
+        setSuggestHeadline(resolved.headline || 'AI Suggested New Songs');
+        setSuggestions(resolved.suggestions.filter((s) => !isMarathiTrackMeta(s.track)));
       } catch (err) {
         setSuggestError(
           err instanceof Error ? err.message : 'Unable to get AI song suggestions right now.'
@@ -666,27 +773,48 @@ export default function App() {
     setAiError(null);
     setShowOfflineTab(false);
     try {
-      const res = await fetch('/api/ai/filter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, currentMode: activeMode }),
-      });
+      let resolved: AiFilterResponse | null = null;
+      try {
+        const res = await fetch('/api/ai/filter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, currentMode: activeMode }),
+        });
 
-      const data = (await res.json()) as Partial<AiFilterResponse> & { error?: string };
-      if (!res.ok || !data.tracks || !data.crate || !data.mixerPreset) {
-        throw new Error(data.error || 'AI filter request failed.');
+        const data = await safeParseApiJson<
+          Partial<AiFilterResponse> & { error?: string; blocked?: boolean }
+        >(res);
+
+        if (res.status === 403 && data?.blocked) {
+          throw new Error(data.error || 'Marathi songs are blocked on Rintu Bit DJ.');
+        }
+        if (res.ok && data && data.tracks && data.crate && data.mixerPreset) {
+          resolved = {
+            crate: data.crate,
+            mixerPreset: data.mixerPreset,
+            tracks: data.tracks,
+          };
+        }
+      } catch (apiErr) {
+        if (apiErr instanceof Error && apiErr.message.includes('Marathi')) {
+          throw apiErr;
+        }
       }
 
-      const cleanTracks = data.tracks.filter((t) => !isMarathiTrackMeta(t));
-      setActiveCrate(data.crate);
-      setActivePreset(data.mixerPreset);
-      setActiveMode(data.crate.recommendedMode);
+      if (!resolved) {
+        resolved = await buildClientAiFilterFallback(prompt, activeMode);
+      }
+
+      const cleanTracks = resolved.tracks.filter((t) => !isMarathiTrackMeta(t));
+      setActiveCrate(resolved.crate);
+      setActivePreset(resolved.mixerPreset);
+      setActiveMode(resolved.crate.recommendedMode);
       setSearchQuery('');
       setTracks(cleanTracks);
-      setBangerMode(data.mixerPreset.bangerMode);
+      setBangerMode(resolved.mixerPreset.bangerMode);
 
-      const bassEq = Math.max(-6, Math.min(10, Math.round(data.mixerPreset.bassBoostDb)));
-      const targetPitch = data.mixerPreset.targetPitch || 1.0;
+      const bassEq = Math.max(-6, Math.min(10, Math.round(resolved.mixerPreset.bassBoostDb)));
+      const targetPitch = resolved.mixerPreset.targetPitch || 1.0;
 
       const aiEq: DeckEq = { low: bassEq, mid: 0, high: 1, filter: 0 };
       updateDeck('A', (prev) => ({ ...prev, eq: aiEq, pitch: targetPitch }));

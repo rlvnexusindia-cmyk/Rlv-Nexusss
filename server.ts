@@ -785,6 +785,77 @@ async function startServer() {
     }
   });
 
+  // 5. Dynamic SEO Sitemap & Robots.txt (registered before SPA fallback)
+  const resolvePublicBaseUrl = (req: Request): string => {
+    const protoHeader = req.headers['x-forwarded-proto'];
+    const proto =
+      typeof protoHeader === 'string' && protoHeader.trim()
+        ? protoHeader.split(',')[0].trim()
+        : req.protocol || 'https';
+    const fwdHostHeader = req.headers['x-forwarded-host'];
+    const fwdHost =
+      typeof fwdHostHeader === 'string' && fwdHostHeader.trim()
+        ? fwdHostHeader.split(',')[0].trim()
+        : '';
+    const reqHost = req.get('host') || '';
+    const activeHost = fwdHost || reqHost;
+    const isLocalHost =
+      !activeHost ||
+      activeHost.startsWith('localhost') ||
+      activeHost.startsWith('127.0.0.1') ||
+      activeHost.startsWith('0.0.0.0');
+
+    if (!isLocalHost) {
+      return `${proto}://${activeHost}`;
+    }
+
+    const envAppUrl = process.env.APP_URL;
+    if (envAppUrl && envAppUrl.startsWith('http') && !envAppUrl.includes('MY_APP_URL')) {
+      return envAppUrl.replace(/\/+$/, '');
+    }
+
+    return `${proto}://${activeHost || `localhost:${PORT}`}`;
+  };
+
+  app.get('/sitemap.xml', (req: Request, res: Response) => {
+    const baseUrl = resolvePublicBaseUrl(req);
+    const today = new Date().toISOString().slice(0, 10);
+    const modes = Object.keys(MODE_SEARCH_QUERIES);
+
+    const urls: Array<{ loc: string; priority: string; changefreq: string }> = [
+      { loc: `${baseUrl}/`, priority: '1.0', changefreq: 'daily' },
+      { loc: `${baseUrl}/?view=console`, priority: '0.9', changefreq: 'daily' },
+      ...modes.map((m) => ({
+        loc: `${baseUrl}/?genre=${encodeURIComponent(m)}`,
+        priority: '0.8',
+        changefreq: 'weekly',
+      })),
+    ];
+
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...urls.map(
+        (u) =>
+          `  <url>\n    <loc>${u.loc}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>${u.changefreq}</changefreq>\n    <priority>${u.priority}</priority>\n  </url>`
+      ),
+      '</urlset>',
+    ].join('\n');
+
+    res.status(200);
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(xml);
+  });
+
+  app.get('/robots.txt', (req: Request, res: Response) => {
+    const baseUrl = resolvePublicBaseUrl(req);
+    const txt = `User-agent: *\nAllow: /\nSitemap: ${baseUrl}/sitemap.xml\n`;
+    res.status(200);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(txt);
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

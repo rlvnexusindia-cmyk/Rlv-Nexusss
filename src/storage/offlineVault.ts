@@ -34,12 +34,31 @@ async function blobToDataUrl(blob: Blob): Promise<string | undefined> {
   });
 }
 
-export async function saveTrackOffline(track: Track): Promise<OfflineTrack> {
-  const audioRes = await fetch(track.audioUrl);
-  if (!audioRes.ok) {
-    throw new Error('Could not download audio stream for offline storage.');
+async function fetchAudioBlobWithFallback(track: Track): Promise<Blob> {
+  const candidates = Array.from(
+    new Set([track.audioUrl, track.previewUrl].filter((u): u is string => Boolean(u)))
+  );
+  for (const candidateUrl of candidates) {
+    try {
+      const res = await fetch(candidateUrl);
+      if (!res.ok) continue;
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html') || contentType.includes('text/plain')) {
+        continue;
+      }
+      const blob = await res.blob();
+      if (blob.size > 0 && !blob.type.toLowerCase().includes('text/html')) {
+        return blob;
+      }
+    } catch {
+      // Try next source URL
+    }
   }
-  const audioBlob = await audioRes.blob();
+  throw new Error('Could not download audio stream for offline storage.');
+}
+
+export async function saveTrackOffline(track: Track): Promise<OfflineTrack> {
+  const audioBlob = await fetchAudioBlobWithFallback(track);
 
   let artworkDataUrl: string | undefined;
   if (track.artworkUrl) {
@@ -129,18 +148,19 @@ export async function removeOfflineTrack(trackId: string): Promise<void> {
 }
 
 export async function triggerDeviceDownload(track: Track): Promise<void> {
-  // Prefer offline blob if already cached, else download directly via proxy attachment endpoint
   const offlineObjectUrl = await getOfflineAudioUrl(track.id);
-  const safeName = `${track.title} - ${track.artist}`
-    .replace(/[^a-zA-Z0-9\s_-]/g, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .slice(0, 60) || 'swarmix_song';
+  const safeName =
+    `${track.title} - ${track.artist}`
+      .replace(/[^a-zA-Z0-9\s_-]/g, '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .slice(0, 60) || 'rintubit_dj_song';
+  const ext = track.source === 'audius' ? 'mp3' : 'm4a';
 
   if (offlineObjectUrl) {
     const a = document.createElement('a');
     a.href = offlineObjectUrl;
-    a.download = `${safeName}.m4a`;
+    a.download = `${safeName}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -148,11 +168,24 @@ export async function triggerDeviceDownload(track: Track): Promise<void> {
     return;
   }
 
-  const downloadUrl = `/api/audio-proxy?url=${encodeURIComponent(track.previewUrl)}&download=1&filename=${encodeURIComponent(safeName)}`;
-  const a = document.createElement('a');
-  a.href = downloadUrl;
-  a.download = `${safeName}.m4a`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  try {
+    const blob = await fetchAudioBlobWithFallback(track);
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = `${safeName}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  } catch {
+    const directUrl = track.previewUrl || track.audioUrl;
+    const a = document.createElement('a');
+    a.href = directUrl;
+    a.download = `${safeName}.${ext}`;
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
 }
