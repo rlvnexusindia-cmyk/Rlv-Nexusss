@@ -204,12 +204,12 @@ export default function App() {
         try {
           djAudioEngine.stopOfflineBeat();
           setActiveOfflineBeat(null);
-          if (deckId === 'B' && crossfadeRef.current < 0.15) {
+          if (deckId === 'B' && crossfadeRef.current < 0.35) {
             const nextCf = deckARef.current.isPlaying ? 0.5 : 1;
             setCrossfade(nextCf);
             crossfadeRef.current = nextCf;
             djAudioEngine.setCrossfader(nextCf);
-          } else if (deckId === 'A' && crossfadeRef.current > 0.85) {
+          } else if (deckId === 'A' && crossfadeRef.current > 0.65) {
             const nextCf = deckBRef.current.isPlaying ? 0.5 : 0;
             setCrossfade(nextCf);
             crossfadeRef.current = nextCf;
@@ -739,9 +739,9 @@ export default function App() {
         setActiveOfflineBeat(null);
 
         // Automatically bring Deck B (or Deck A) into audible crossfade range when user hits Play
-        if (deckId === 'B' && crossfadeRef.current < 0.15) {
+        if (deckId === 'B' && crossfadeRef.current < 0.35) {
           handleCrossfadeChange(deckARef.current.isPlaying ? 0.5 : 1);
-        } else if (deckId === 'A' && crossfadeRef.current > 0.85) {
+        } else if (deckId === 'A' && crossfadeRef.current > 0.65) {
           handleCrossfadeChange(deckBRef.current.isPlaying ? 0.5 : 0);
         }
 

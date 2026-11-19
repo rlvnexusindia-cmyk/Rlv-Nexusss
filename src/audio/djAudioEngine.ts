@@ -190,6 +190,10 @@ class DjAudioEngine {
       deckAnalyser.connect(crossfadeGain);
       crossfadeGain.connect(this.bangerLowShelf);
 
+      // Reset element gain to unity once Web Audio graph controls channel/crossfade gain
+      deck.audio.muted = false;
+      deck.audio.volume = 1;
+
       deck.source = source;
       deck.lowFilter = lowFilter;
       deck.midFilter = midFilter;
@@ -212,6 +216,10 @@ class DjAudioEngine {
   public async loadAndPlay(deckId: DeckId, audioUrl: string, pitch = 1, loop = false): Promise<void> {
     await this.ensureContext();
     const deck = this.decks[deckId];
+    if (deck.source && deck.crossfadeGain) {
+      deck.audio.muted = false;
+      deck.audio.volume = 1;
+    }
     if (deck.audio.src !== audioUrl) {
       deck.audio.src = audioUrl;
       deck.audio.load();
@@ -229,8 +237,13 @@ class DjAudioEngine {
 
   public async play(deckId: DeckId): Promise<void> {
     await this.ensureContext();
+    const deck = this.decks[deckId];
+    if (deck.source && deck.crossfadeGain) {
+      deck.audio.muted = false;
+      deck.audio.volume = 1;
+    }
     this.applyCrossfade();
-    await this.decks[deckId].audio.play();
+    await deck.audio.play();
   }
 
   public pause(deckId: DeckId): void {
@@ -258,9 +271,11 @@ class DjAudioEngine {
     const deck = this.decks[deckId];
     deck.volume = clamped;
     if (deck.channelGain && this.ctx) {
+      deck.audio.muted = false;
+      deck.audio.volume = 1;
       deck.channelGain.gain.setTargetAtTime(clamped, this.ctx.currentTime, 0.02);
     } else {
-      deck.audio.volume = clamped;
+      this.applyCrossfade();
     }
   }
 
@@ -305,14 +320,18 @@ class DjAudioEngine {
     const gainA = Math.min(1, Math.cos(angle) * 1.15);
     const gainB = Math.min(1, Math.sin(angle) * 1.15);
 
-    if (this.ctx && this.decks.A.crossfadeGain && this.decks.B.crossfadeGain) {
-      const now = this.ctx.currentTime;
-      this.decks.A.crossfadeGain.gain.setTargetAtTime(gainA, now, 0.02);
-      this.decks.B.crossfadeGain.gain.setTargetAtTime(gainB, now, 0.02);
-    } else {
-      this.decks.A.audio.volume = this.decks.A.volume * gainA * this.masterVolume;
-      this.decks.B.audio.volume = this.decks.B.volume * gainB * this.masterVolume;
-    }
+    (['A', 'B'] as DeckId[]).forEach((id) => {
+      const deck = this.decks[id];
+      const cfGain = id === 'A' ? gainA : gainB;
+      if (this.ctx && deck.source && deck.crossfadeGain) {
+        deck.audio.muted = false;
+        deck.audio.volume = 1;
+        deck.crossfadeGain.gain.setTargetAtTime(cfGain, this.ctx.currentTime, 0.02);
+      } else {
+        deck.audio.muted = false;
+        deck.audio.volume = Math.max(0, Math.min(1, deck.volume * cfGain * this.masterVolume));
+      }
+    });
   }
 
   public setMasterVolume(volume: number): void {
