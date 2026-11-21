@@ -8,14 +8,17 @@ import { LoadingScreen } from './components/LoadingScreen';
 import { MasterMixer } from './components/MasterMixer';
 import { MobileBottomNav, type MobileNavTarget } from './components/MobileBottomNav';
 import { ModeAndTrackBrowser } from './components/ModeAndTrackBrowser';
+import { PartyBackdropOverlay } from './components/PartyBackdropOverlay';
 import { QueuePanel } from './components/QueuePanel';
+import { SongDetailModal } from './components/SongDetailModal';
 import { TopBar, type AppView } from './components/TopBar';
 import { DJ_MODES } from './data/modes';
 import {
   buildClientAiFilterFallback,
   buildClientAiSuggestFallback,
-  fetchDirectCatalog,
   safeParseApiJson,
+  searchPaginatedDirectCatalog,
+  type CatalogBatchResult,
 } from './services/clientCatalog';
 import {
   getOfflineAudioUrl,
@@ -91,9 +94,12 @@ export default function App() {
   const [crossfade, setCrossfade] = useState<number>(0);
   const [masterVolume, setMasterVolume] = useState<number>(0.9);
   const [bangerMode, setBangerMode] = useState<boolean>(true);
+  const [partyLightsEnabled, setPartyLightsEnabled] = useState<boolean>(true);
   const [is8dEnabled, setIs8dEnabled] = useState<boolean>(false);
   const [autoMixEnabled, setAutoMixEnabled] = useState<boolean>(true);
   const [autoDj20s, setAutoDj20s] = useState<boolean>(false);
+  const [autoDjMode, setAutoDjMode] = useState<'two_song' | 'playlist'>('two_song');
+  const [autoDjIntervalSec, setAutoDjIntervalSec] = useState<12 | 20>(20);
   const [autoDjCountdown, setAutoDjCountdown] = useState<number>(20);
   const [isAutoTransitioning, setIsAutoTransitioning] = useState<boolean>(false);
 
@@ -105,11 +111,18 @@ export default function App() {
   const [activeMode, setActiveMode] = useState<DjModeId>(initialUrlState.mode);
   const [showOfflineTab, setShowOfflineTab] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [caseSensitiveSearch, setCaseSensitiveSearch] = useState<boolean>(false);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [totalAvailableTracks, setTotalAvailableTracks] = useState<number>(0);
+  const [catalogNextPage, setCatalogNextPage] = useState<number>(1);
+  const [hasMoreTracks, setHasMoreTracks] = useState<boolean>(false);
+  const [isLoadingMoreTracks, setIsLoadingMoreTracks] = useState<boolean>(false);
+  const [isAutoStreamingAll, setIsAutoStreamingAll] = useState<boolean>(false);
   const [isLoadingTracks, setIsLoadingTracks] = useState<boolean>(true);
   const [tracksError, setTracksError] = useState<string | null>(null);
 
   const [queue, setQueue] = useState<Track[]>([]);
+  const [inspectedTrack, setInspectedTrack] = useState<Track | null>(null);
 
   // Offline Vault & Built-in Synth Beat state
   const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>([]);
@@ -139,6 +152,10 @@ export default function App() {
   crossfadeRef.current = crossfade;
   const autoMixRef = useRef(autoMixEnabled);
   autoMixRef.current = autoMixEnabled;
+  const autoDjModeRef = useRef(autoDjMode);
+  autoDjModeRef.current = autoDjMode;
+  const autoDjIntervalRef = useRef(autoDjIntervalSec);
+  autoDjIntervalRef.current = autoDjIntervalSec;
   const isAutoTransitioningRef = useRef(isAutoTransitioning);
   isAutoTransitioningRef.current = isAutoTransitioning;
   const tracksRef = useRef(tracks);
@@ -151,6 +168,13 @@ export default function App() {
   deckBRef.current = deckB;
   const transitionRafRef = useRef<number>(0);
   const autoDjCutCountRef = useRef<number>(0);
+  const autoDjSliceRef = useRef<{ A: number; B: number }>({ A: 0, B: 0 });
+  const searchSessionRef = useRef<number>(0);
+  const isAutoStreamingRef = useRef<boolean>(false);
+  const nextPageRef = useRef<number>(1);
+  nextPageRef.current = catalogNextPage;
+  const hasMoreRef = useRef<boolean>(false);
+  hasMoreRef.current = hasMoreTracks;
   const deckObjectUrlRef = useRef<Record<DeckId, string | null>>({ A: null, B: null });
 
   const updateDeck = useCallback((deckId: DeckId, updater: (prev: DeckState) => DeckState) => {
@@ -327,11 +351,41 @@ export default function App() {
 
       if (mashupCut && activeIncomingTrack) {
         const audio = djAudioEngine.getAudioElement(toDeck);
-        const dur = activeIncomingTrack.durationSec || audio.duration || 180;
-        const dropCueSec = dur >= 90 ? Math.min(42, Math.round(dur * 0.24)) : Math.min(18, Math.round(dur * 0.2));
-        if (audio.currentTime < 6 && Number.isFinite(dropCueSec) && dropCueSec > 0) {
-          djAudioEngine.seek(toDeck, dropCueSec);
+        const dur =
+          (Number.isFinite(audio.duration) && audio.duration > 10
+            ? audio.duration
+            : activeIncomingTrack.durationSec) || 180;
+
+        if (autoDjModeRef.current === 'two_song') {
+          const sliceOffsets = [0.22, 0.46, 0.68, 0.34];
+          const sliceIdx = autoDjSliceRef.current[toDeck];
+          autoDjSliceRef.current[toDeck] = sliceIdx + 1;
+          const targetRatio = sliceOffsets[sliceIdx % sliceOffsets.length];
+          const maxSafeSeek = Math.max(8, dur - 22);
+          const cutCueSec = Math.min(maxSafeSeek, Math.max(8, Math.round(dur * targetRatio)));
+          if (Number.isFinite(cutCueSec) && cutCueSec > 0) {
+            if (audio.readyState >= 1) {
+              djAudioEngine.seek(toDeck, cutCueSec);
+            } else {
+              audio.addEventListener('loadedmetadata', () => djAudioEngine.seek(toDeck, cutCueSec), {
+                once: true,
+              });
+            }
+          }
+        } else {
+          const dropCueSec =
+            dur >= 90 ? Math.min(42, Math.round(dur * 0.24)) : Math.min(18, Math.round(dur * 0.2));
+          if (audio.currentTime < 6 && Number.isFinite(dropCueSec) && dropCueSec > 0) {
+            if (audio.readyState >= 1) {
+              djAudioEngine.seek(toDeck, dropCueSec);
+            } else {
+              audio.addEventListener('loadedmetadata', () => djAudioEngine.seek(toDeck, dropCueSec), {
+                once: true,
+              });
+            }
+          }
         }
+
         autoDjCutCountRef.current += 1;
         if (autoDjCutCountRef.current % 2 === 1) {
           void djAudioEngine.triggerFx('riser');
@@ -371,13 +425,16 @@ export default function App() {
           djAudioEngine.setDeckEq(fromDeck, { ...restoredEq, filter: 0 });
           updateDeck(fromDeck, (p) => ({ ...p, isPlaying: false, eq: { ...p.eq, filter: 0 } }));
 
-          const nextAvoid = new Set<string>();
-          const currentTarget = toDeck === 'A' ? deckARef.current : deckBRef.current;
-          if (currentTarget.track?.id) nextAvoid.add(currentTarget.track.id);
-          if (sourceState.track?.id) nextAvoid.add(sourceState.track.id);
-          const upcoming = pullNextTrackForDeck(nextAvoid);
-          if (upcoming) {
-            void loadTrackToDeck(fromDeck, upcoming, false);
+          // In 2-Song Cut mode, keep both loaded tracks on Deck A & Deck B intact so they cut back & forth
+          if (!mashupCut || autoDjModeRef.current === 'playlist') {
+            const nextAvoid = new Set<string>();
+            const currentTarget = toDeck === 'A' ? deckARef.current : deckBRef.current;
+            if (currentTarget.track?.id) nextAvoid.add(currentTarget.track.id);
+            if (sourceState.track?.id) nextAvoid.add(sourceState.track.id);
+            const upcoming = pullNextTrackForDeck(nextAvoid);
+            if (upcoming) {
+              void loadTrackToDeck(fromDeck, upcoming, false);
+            }
           }
         }
       };
@@ -494,7 +551,7 @@ export default function App() {
 
   useEffect(() => {
     if (!autoDj20s) {
-      setAutoDjCountdown(20);
+      setAutoDjCountdown(autoDjIntervalSec);
       return;
     }
 
@@ -507,15 +564,15 @@ export default function App() {
       setAutoDjCountdown((prev) => {
         if (prev <= 1) {
           const toDeck: DeckId = crossfadeRef.current <= 0.5 ? 'B' : 'A';
-          void triggerSmoothCrossfade(toDeck, 2600, true);
-          return 20;
+          void triggerSmoothCrossfade(toDeck, 2200, true);
+          return autoDjIntervalRef.current;
         }
         return prev - 1;
       });
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [autoDj20s, triggerSmoothCrossfade]);
+  }, [autoDj20s, autoDjIntervalSec, triggerSmoothCrossfade]);
 
   useEffect(() => {
     void getOfflineTracks().then((saved) => setOfflineTracks(saved));
@@ -539,68 +596,276 @@ export default function App() {
     ogUrlMeta.content = canonicalUrl;
   }, []);
 
+  const fetchCatalogPageBatch = useCallback(
+    async (
+      mode: DjModeId,
+      q: string,
+      page: number,
+      pagesPerBatch: number,
+      caseSensitive: boolean
+    ): Promise<CatalogBatchResult> => {
+      const params = new URLSearchParams({
+        genre: mode,
+        page: String(page),
+        pages: String(pagesPerBatch),
+        caseSensitive: caseSensitive ? '1' : '0',
+      });
+      if (q) params.set('q', q);
+
+      let batch: CatalogBatchResult | null = null;
+      try {
+        const res = await fetch(`/api/tracks?${params.toString()}`);
+        const data = await safeParseApiJson<{
+          tracks?: Track[];
+          totalAvailable?: number;
+          page?: number;
+          nextPage?: number;
+          hasMore?: boolean;
+          error?: string;
+          blocked?: boolean;
+        }>(res);
+
+        if (res.status === 403 && data?.blocked) {
+          throw new Error(data.error || 'Marathi songs are blocked on Rintu Bit DJ.');
+        }
+        if (res.ok && data && Array.isArray(data.tracks)) {
+          const clean = data.tracks.filter((t) => !isMarathiTrackMeta(t));
+          batch = {
+            tracks: clean,
+            totalAvailable:
+              typeof data.totalAvailable === 'number' ? data.totalAvailable : clean.length,
+            page: typeof data.page === 'number' ? data.page : page,
+            nextPage:
+              typeof data.nextPage === 'number' ? data.nextPage : page + pagesPerBatch,
+            hasMore: Boolean(data.hasMore),
+          };
+        }
+      } catch (apiErr) {
+        if (apiErr instanceof Error && apiErr.message.includes('Marathi')) {
+          throw apiErr;
+        }
+      }
+
+      if (!batch) {
+        batch = await searchPaginatedDirectCatalog({
+          mode,
+          query: q,
+          page,
+          pagesPerBatch,
+          caseSensitive,
+        });
+      }
+
+      return batch;
+    },
+    []
+  );
+
+  const mergeDeduplicatedTracks = useCallback((existing: Track[], incoming: Track[]): Track[] => {
+    const seen = new Set<string>(existing.map((t) => t.id));
+    const normSeen = new Set<string>(
+      existing.map(
+        (t) =>
+          `${t.title.toLowerCase().replace(/\s*\([^)]*\)/g, '').trim()}::${t.artist.toLowerCase().split(',')[0].trim()}`
+      )
+    );
+    const next = [...existing];
+    for (const track of incoming) {
+      if (track.durationSec < 60 || isMarathiTrackMeta(track)) continue;
+      if (seen.has(track.id)) continue;
+      const normKey = `${track.title.toLowerCase().replace(/\s*\([^)]*\)/g, '').trim()}::${track.artist.toLowerCase().split(',')[0].trim()}`;
+      if (normSeen.has(normKey)) continue;
+      seen.add(track.id);
+      normSeen.add(normKey);
+      next.push(track);
+    }
+    return next;
+  }, []);
+
+  const streamCatalogWaves = useCallback(
+    async (
+      sessionId: number,
+      mode: DjModeId,
+      q: string,
+      caseSensitive: boolean,
+      targetTrackCount: number,
+      startPage: number
+    ) => {
+      isAutoStreamingRef.current = true;
+      setIsAutoStreamingAll(true);
+      let cursorPage = startPage;
+      let canContinue = true;
+
+      try {
+        while (
+          isAutoStreamingRef.current &&
+          searchSessionRef.current === sessionId &&
+          canContinue &&
+          tracksRef.current.length < targetTrackCount
+        ) {
+          setIsLoadingMoreTracks(true);
+          const batch = await fetchCatalogPageBatch(mode, q, cursorPage, 6, caseSensitive);
+          if (searchSessionRef.current !== sessionId || !isAutoStreamingRef.current) break;
+
+          setTracks((prev) => mergeDeduplicatedTracks(prev, batch.tracks));
+          setTotalAvailableTracks((prev) => Math.max(prev, batch.totalAvailable));
+          cursorPage = batch.nextPage;
+          setCatalogNextPage(batch.nextPage);
+          nextPageRef.current = batch.nextPage;
+          canContinue = batch.hasMore && batch.tracks.length > 0;
+          setHasMoreTracks(canContinue);
+          hasMoreRef.current = canContinue;
+
+          // Yield briefly to keep UI scrolling silky smooth at 60fps
+          await new Promise((r) => setTimeout(r, 80));
+        }
+      } finally {
+        if (searchSessionRef.current === sessionId) {
+          isAutoStreamingRef.current = false;
+          setIsAutoStreamingAll(false);
+          setIsLoadingMoreTracks(false);
+        }
+      }
+    },
+    [fetchCatalogPageBatch, mergeDeduplicatedTracks]
+  );
+
   const fetchTracks = useCallback(
-    async (mode: DjModeId, q = '', autoStageDecks = false, autoPlayFirst = false) => {
-      if (q && containsMarathiMarker(q)) {
+    async (
+      mode: DjModeId,
+      q = '',
+      autoStageDecks = false,
+      autoPlayFirst = false,
+      caseSensitiveOverride?: boolean
+    ) => {
+      const cleanQ = q.trim();
+      if (cleanQ && containsMarathiMarker(cleanQ)) {
         setTracksError(
           'Marathi songs are blocked on Rintu Bit DJ. Search any other Indian or World song!'
         );
         return;
       }
 
+      const sessionId = ++searchSessionRef.current;
+      isAutoStreamingRef.current = false;
+      setIsAutoStreamingAll(false);
+      setIsLoadingMoreTracks(false);
       setIsLoadingTracks(true);
       setTracksError(null);
+
+      const useCaseSensitive = caseSensitiveOverride ?? caseSensitiveSearch;
+
       try {
-        const params = new URLSearchParams({ genre: mode });
-        if (q) params.set('q', q);
+        const firstBatch = await fetchCatalogPageBatch(
+          mode,
+          cleanQ,
+          1,
+          cleanQ ? 5 : 2,
+          useCaseSensitive
+        );
+        if (searchSessionRef.current !== sessionId) return;
 
-        let fetched: Track[] | null = null;
-        try {
-          const res = await fetch(`/api/tracks?${params.toString()}`);
-          const data = await safeParseApiJson<{
-            tracks?: Track[];
-            error?: string;
-            blocked?: boolean;
-          }>(res);
+        setTracks(firstBatch.tracks);
+        tracksRef.current = firstBatch.tracks;
+        setTotalAvailableTracks(firstBatch.totalAvailable);
+        setCatalogNextPage(firstBatch.nextPage);
+        nextPageRef.current = firstBatch.nextPage;
+        setHasMoreTracks(firstBatch.hasMore);
+        hasMoreRef.current = firstBatch.hasMore;
 
-          if (res.status === 403 && data?.blocked) {
-            throw new Error(data.error || 'Marathi songs are blocked on Rintu Bit DJ.');
-          }
-          if (res.ok && data && Array.isArray(data.tracks)) {
-            fetched = data.tracks.filter((t) => !isMarathiTrackMeta(t));
-          }
-        } catch (apiErr) {
-          if (apiErr instanceof Error && apiErr.message.includes('Marathi')) {
-            throw apiErr;
-          }
+        if (autoStageDecks && firstBatch.tracks.length > 0) {
+          if (firstBatch.tracks[0]) void loadTrackToDeck('A', firstBatch.tracks[0], autoPlayFirst);
+          if (firstBatch.tracks[1]) void loadTrackToDeck('B', firstBatch.tracks[1], false);
+          if (firstBatch.tracks.length > 2) setQueue(firstBatch.tracks.slice(2, 10));
         }
 
-        if (!fetched) {
-          fetched = (await fetchDirectCatalog(mode, q)).filter((t) => !isMarathiTrackMeta(t));
-        }
-
-        setTracks(fetched);
-
-        if (autoStageDecks && fetched.length > 0) {
-          if (fetched[0]) void loadTrackToDeck('A', fetched[0], autoPlayFirst);
-          if (fetched[1]) void loadTrackToDeck('B', fetched[1], false);
-          if (fetched.length > 2) setQueue(fetched.slice(2, 10));
+        // Automatically warm 2nd fast wave when user runs a keyword search so hundreds of matches appear right away
+        if (cleanQ && firstBatch.hasMore) {
+          void (async () => {
+            try {
+              const secondBatch = await fetchCatalogPageBatch(
+                mode,
+                cleanQ,
+                firstBatch.nextPage,
+                5,
+                useCaseSensitive
+              );
+              if (searchSessionRef.current !== sessionId) return;
+              setTracks((prev) => mergeDeduplicatedTracks(prev, secondBatch.tracks));
+              setTotalAvailableTracks((prev) => Math.max(prev, secondBatch.totalAvailable));
+              setCatalogNextPage(secondBatch.nextPage);
+              nextPageRef.current = secondBatch.nextPage;
+              setHasMoreTracks(secondBatch.hasMore);
+              hasMoreRef.current = secondBatch.hasMore;
+            } catch {
+              // Silent background wave error
+            }
+          })();
         }
       } catch (err) {
-        setTracksError(
-          err instanceof Error ? err.message : 'Unable to reach music catalog API.'
-        );
+        if (searchSessionRef.current === sessionId) {
+          setTracksError(
+            err instanceof Error ? err.message : 'Unable to reach music catalog API.'
+          );
+        }
       } finally {
-        setIsLoadingTracks(false);
-        setInitialReady(true);
+        if (searchSessionRef.current === sessionId) {
+          setIsLoadingTracks(false);
+          setInitialReady(true);
+        }
       }
     },
-    [loadTrackToDeck]
+    [caseSensitiveSearch, fetchCatalogPageBatch, loadTrackToDeck, mergeDeduplicatedTracks]
   );
+
+  const handleLoadMoreTracks = useCallback(async () => {
+    if (isLoadingMoreTracks || !hasMoreRef.current) return;
+    const sessionId = searchSessionRef.current;
+    setIsLoadingMoreTracks(true);
+    try {
+      const batch = await fetchCatalogPageBatch(
+        activeMode,
+        searchQuery.trim(),
+        nextPageRef.current,
+        5,
+        caseSensitiveSearch
+      );
+      if (searchSessionRef.current !== sessionId) return;
+      setTracks((prev) => mergeDeduplicatedTracks(prev, batch.tracks));
+      setTotalAvailableTracks((prev) => Math.max(prev, batch.totalAvailable));
+      setCatalogNextPage(batch.nextPage);
+      nextPageRef.current = batch.nextPage;
+      setHasMoreTracks(batch.hasMore);
+      hasMoreRef.current = batch.hasMore;
+    } finally {
+      if (searchSessionRef.current === sessionId) {
+        setIsLoadingMoreTracks(false);
+      }
+    }
+  }, [activeMode, caseSensitiveSearch, fetchCatalogPageBatch, isLoadingMoreTracks, mergeDeduplicatedTracks, searchQuery]);
+
+  const handleToggleStreamAll5000 = useCallback(() => {
+    if (isAutoStreamingRef.current) {
+      isAutoStreamingRef.current = false;
+      setIsAutoStreamingAll(false);
+      setIsLoadingMoreTracks(false);
+      return;
+    }
+    if (!hasMoreRef.current) return;
+    void streamCatalogWaves(
+      searchSessionRef.current,
+      activeMode,
+      searchQuery.trim(),
+      caseSensitiveSearch,
+      5500,
+      nextPageRef.current
+    );
+  }, [activeMode, caseSensitiveSearch, searchQuery, streamCatalogWaves]);
 
   useEffect(() => {
     void fetchTracks(initialUrlState.mode, '', true, false);
-  }, [fetchTracks, initialUrlState.mode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleFetchAiSuggestions = useCallback(
     async (seedTrack?: Track | null) => {
@@ -625,34 +890,41 @@ export default function App() {
       try {
         let resolved: AiSuggestResponse | null = null;
         try {
-          const res = await fetch('/api/ai/suggest', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              currentTrack: activeTrack
-                ? {
-                    title: activeTrack.title,
-                    artist: activeTrack.artist,
-                    genre: activeTrack.genre,
-                    bpm: activeTrack.bpm,
-                  }
-                : undefined,
-              activeMode,
-              recentTitles,
-            }),
-          });
-          const data = await safeParseApiJson<Partial<AiSuggestResponse> & { error?: string }>(res);
-          if (res.ok && data && Array.isArray(data.suggestions)) {
-            resolved = {
-              headline: data.headline || 'AI Suggested New Songs',
-              suggestions: data.suggestions,
-            };
+          const ctrl = new AbortController();
+          const timer = window.setTimeout(() => ctrl.abort(), 7500);
+          try {
+            const res = await fetch('/api/ai/suggest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: ctrl.signal,
+              body: JSON.stringify({
+                currentTrack: activeTrack
+                  ? {
+                      title: activeTrack.title,
+                      artist: activeTrack.artist,
+                      genre: activeTrack.genre,
+                      bpm: activeTrack.bpm,
+                    }
+                  : undefined,
+                activeMode,
+                recentTitles,
+              }),
+            });
+            const data = await safeParseApiJson<Partial<AiSuggestResponse> & { error?: string }>(res);
+            if (res.ok && data && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+              resolved = {
+                headline: data.headline || 'AI Suggested New Songs',
+                suggestions: data.suggestions,
+              };
+            }
+          } finally {
+            window.clearTimeout(timer);
           }
         } catch {
           // Fall back to direct catalog suggestion matching
         }
 
-        if (!resolved) {
+        if (!resolved || resolved.suggestions.length === 0) {
           resolved = await buildClientAiSuggestFallback(
             activeTrack
               ? {
@@ -679,6 +951,13 @@ export default function App() {
     },
     [activeMode, suggestions]
   );
+
+  const hasAutoSuggestedRef = useRef(false);
+  useEffect(() => {
+    if (!initialReady || hasAutoSuggestedRef.current) return;
+    hasAutoSuggestedRef.current = true;
+    void handleFetchAiSuggestions(tracksRef.current[0] ?? null);
+  }, [initialReady, handleFetchAiSuggestions]);
 
   const handleSelectMode = (mode: DjModeId) => {
     setShowOfflineTab(false);
@@ -716,11 +995,24 @@ export default function App() {
     void fetchTracks(activeMode, q, true, true);
   };
 
-  const handleSearchSubmit = (q: string) => {
-    setShowOfflineTab(false);
-    setSearchQuery(q);
-    void fetchTracks(activeMode, q, false, false);
-  };
+  const handleSearchSubmit = useCallback(
+    (q: string) => {
+      setShowOfflineTab(false);
+      setSearchQuery(q);
+      void fetchTracks(activeMode, q, false, false, caseSensitiveSearch);
+    },
+    [activeMode, caseSensitiveSearch, fetchTracks]
+  );
+
+  const handleToggleCaseSensitive = useCallback(() => {
+    setCaseSensitiveSearch((prev) => {
+      const next = !prev;
+      if (searchQuery.trim()) {
+        void fetchTracks(activeMode, searchQuery, false, false, next);
+      }
+      return next;
+    });
+  }, [activeMode, fetchTracks, searchQuery]);
 
   const handlePlayNow = async (track: Track) => {
     const targetDeck: DeckId = crossfadeRef.current <= 0.5 ? 'A' : 'B';
@@ -771,7 +1063,28 @@ export default function App() {
       const next = !prev;
       if (next) {
         setAutoMixEnabled(true);
-        setAutoDjCountdown(20);
+        setAutoDjCountdown(autoDjIntervalRef.current);
+
+        // Ensure both Deck A and Deck B have songs loaded so 2-Song Cut mashup can alternate seamlessly
+        if (!deckBRef.current.track) {
+          const avoid = new Set<string>();
+          if (deckARef.current.track?.id) avoid.add(deckARef.current.track.id);
+          const secondTrack = pullNextTrackForDeck(avoid);
+          if (secondTrack) {
+            void loadTrackToDeck('B', secondTrack, false);
+          }
+        }
+        if (!deckARef.current.track) {
+          const avoid = new Set<string>();
+          if (deckBRef.current.track?.id) avoid.add(deckBRef.current.track.id);
+          const firstTrack = pullNextTrackForDeck(avoid);
+          if (firstTrack) {
+            void loadTrackToDeck('A', firstTrack, true);
+            handleCrossfadeChange(0);
+            return next;
+          }
+        }
+
         const playingA = deckARef.current.isPlaying;
         const playingB = deckBRef.current.isPlaying;
         if (!playingA && !playingB) {
@@ -786,6 +1099,20 @@ export default function App() {
       }
       return next;
     });
+  };
+
+  const handleToggleAutoDjInterval = () => {
+    setAutoDjIntervalSec((prev) => {
+      const next = prev === 20 ? 12 : 20;
+      setAutoDjCountdown(next);
+      return next;
+    });
+  };
+
+  const handleInstantMashupCut = () => {
+    const toDeck: DeckId = crossfadeRef.current <= 0.5 ? 'B' : 'A';
+    setAutoDjCountdown(autoDjIntervalRef.current);
+    void triggerSmoothCrossfade(toDeck, 2200, true);
   };
 
   const handleCueRestart = async (deckId: DeckId) => {
@@ -913,25 +1240,32 @@ export default function App() {
     try {
       let resolved: AiFilterResponse | null = null;
       try {
-        const res = await fetch('/api/ai/filter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, currentMode: activeMode }),
-        });
+        const ctrl = new AbortController();
+        const timer = window.setTimeout(() => ctrl.abort(), 7500);
+        try {
+          const res = await fetch('/api/ai/filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: ctrl.signal,
+            body: JSON.stringify({ prompt, currentMode: activeMode }),
+          });
 
-        const data = await safeParseApiJson<
-          Partial<AiFilterResponse> & { error?: string; blocked?: boolean }
-        >(res);
+          const data = await safeParseApiJson<
+            Partial<AiFilterResponse> & { error?: string; blocked?: boolean }
+          >(res);
 
-        if (res.status === 403 && data?.blocked) {
-          throw new Error(data.error || 'Marathi songs are blocked on Rintu Bit DJ.');
-        }
-        if (res.ok && data && data.tracks && data.crate && data.mixerPreset) {
-          resolved = {
-            crate: data.crate,
-            mixerPreset: data.mixerPreset,
-            tracks: data.tracks,
-          };
+          if (res.status === 403 && data?.blocked) {
+            throw new Error(data.error || 'Marathi songs are blocked on Rintu Bit DJ.');
+          }
+          if (res.ok && data && data.tracks && data.crate && data.mixerPreset) {
+            resolved = {
+              crate: data.crate,
+              mixerPreset: data.mixerPreset,
+              tracks: data.tracks,
+            };
+          }
+        } finally {
+          window.clearTimeout(timer);
         }
       } catch (apiErr) {
         if (apiErr instanceof Error && apiErr.message.includes('Marathi')) {
@@ -1004,8 +1338,23 @@ export default function App() {
     }
   };
 
+  const isPartyStageActive =
+    deckA.isPlaying ||
+    deckB.isPlaying ||
+    deckA.isLoading ||
+    deckB.isLoading ||
+    activeOfflineBeat !== null;
+
   return (
-    <div className="min-h-screen bg-[#090B10] text-[#F1F3F5] flex flex-col">
+    <div className="relative min-h-screen bg-[#090B10] text-[#F1F3F5] flex flex-col overflow-x-hidden">
+      <PartyBackdropOverlay
+        isPlaying={isPartyStageActive}
+        deckAPlaying={deckA.isPlaying || deckA.isLoading}
+        deckBPlaying={deckB.isPlaying || deckB.isLoading}
+        bangerMode={bangerMode}
+        enabled={partyLightsEnabled}
+      />
+
       {showSplash && (
         <LoadingScreen
           isReady={initialReady}
@@ -1025,7 +1374,7 @@ export default function App() {
         onNavigateConsoleSection={handleNavigateConsoleSection}
       />
 
-      <main className="mx-auto w-full max-w-[1440px] flex-1 px-3.5 py-5 pb-20 sm:px-6 md:pb-8 space-y-6">
+      <main className="relative z-10 mx-auto w-full max-w-[1440px] flex-1 px-3.5 py-5 pb-20 sm:px-6 md:pb-8 space-y-6">
         {activeView === 'home' ? (
           <HomeScreen
             offlineCount={offlineTracks.length}
@@ -1048,7 +1397,7 @@ export default function App() {
           <>
             {/* Console Header + Mobile Deck Switcher */}
             <section id="console" aria-label="Dual-Deck DJ Mixing Console" className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+              <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-3">
                 <div>
                   <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#F1F3F5]">
                     Rintu Bit DJ Console
@@ -1057,24 +1406,34 @@ export default function App() {
                     Mix World &amp; Indian music (90s, Bhojpuri, Haryanvi, Punjabi, Tamil, EDM, Global) — Marathi blocked.
                   </p>
                 </div>
-                <div className="text-xs font-mono-tabular text-[#9CA3AF]">
-                  <span>
-                    Mode: {showOfflineTab ? 'Offline Vault' : DJ_MODES.find((m) => m.id === activeMode)?.label ?? activeMode}
-                  </span>
-                  <span aria-hidden="true"> · </span>
-                  <span>{bangerMode ? 'Bass Boost Active' : 'Balanced Studio EQ'}</span>
-                  {autoDj20s && (
-                    <>
-                      <span aria-hidden="true"> · </span>
-                      <span className="text-emerald-400">Auto DJ 20s ({autoDjCountdown}s)</span>
-                    </>
-                  )}
-                  {is8dEnabled && (
-                    <>
-                      <span aria-hidden="true"> · </span>
-                      <span className="text-sky-400">8D Spatial</span>
-                    </>
-                  )}
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="text-xs font-mono-tabular text-[#9CA3AF]">
+                    <span>
+                      Mode: {showOfflineTab ? 'Offline Vault' : DJ_MODES.find((m) => m.id === activeMode)?.label ?? activeMode}
+                    </span>
+                    <span aria-hidden="true"> · </span>
+                    <span>{bangerMode ? 'Bass Boost Active' : 'Balanced Studio EQ'}</span>
+                    {is8dEnabled && (
+                      <>
+                        <span aria-hidden="true"> · </span>
+                        <span className="text-sky-400">8D Spatial</span>
+                      </>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleToggleAutoDj20s}
+                    aria-pressed={autoDj20s}
+                    className={`min-h-[38px] rounded-xl px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      autoDj20s
+                        ? 'bg-emerald-400 text-[#090B10] hover:bg-emerald-300'
+                        : 'border border-emerald-400/40 bg-emerald-400/12 text-emerald-300 hover:bg-emerald-400/20'
+                    }`}
+                  >
+                    {autoDj20s
+                      ? `Auto DJ ${autoDjMode === 'two_song' ? '2-Song Cut' : 'Queue'} · ${autoDjCountdown}s`
+                      : `Auto DJ (${autoDjMode === 'two_song' ? '2-Song Cut' : 'Queue'})`}
+                  </button>
                 </div>
               </div>
 
@@ -1159,6 +1518,9 @@ export default function App() {
                     is8dEnabled={is8dEnabled}
                     autoDj20s={autoDj20s}
                     autoDjCountdown={autoDjCountdown}
+                    autoDjMode={autoDjMode}
+                    autoDjIntervalSec={autoDjIntervalSec}
+                    partyLightsEnabled={partyLightsEnabled}
                     isAnyPlaying={deckA.isPlaying || deckB.isPlaying || activeOfflineBeat !== null}
                     activeDeck={
                       activeOfflineBeat !== null
@@ -1190,6 +1552,12 @@ export default function App() {
                     onToggleBangerMode={() => setBangerMode((b) => !b)}
                     onToggle8dMode={() => setIs8dEnabled((v) => !v)}
                     onToggleAutoDj20s={handleToggleAutoDj20s}
+                    onToggleAutoDjMode={() =>
+                      setAutoDjMode((m) => (m === 'two_song' ? 'playlist' : 'two_song'))
+                    }
+                    onToggleAutoDjInterval={handleToggleAutoDjInterval}
+                    onInstantMashupCut={handleInstantMashupCut}
+                    onTogglePartyLights={() => setPartyLightsEnabled((v) => !v)}
                     onTriggerCrossfadeMix={() => void triggerSmoothCrossfade()}
                     onTriggerFx={handleTriggerFx}
                   />
@@ -1262,6 +1630,7 @@ export default function App() {
               onAddToQueue={(t) => setQueue((prev) => [...prev, t])}
               onSaveOffline={(t) => void handleSaveOffline(t)}
               onDownloadFile={handleDownloadFile}
+              onInspectTrack={setInspectedTrack}
             />
 
             {/* Genre Browser + Up Next Queue */}
@@ -1271,7 +1640,12 @@ export default function App() {
                   activeMode={activeMode}
                   showOfflineTab={showOfflineTab}
                   searchQuery={searchQuery}
+                  caseSensitive={caseSensitiveSearch}
                   tracks={tracks}
+                  totalAvailable={totalAvailableTracks}
+                  hasMore={hasMoreTracks}
+                  isLoadingMore={isLoadingMoreTracks}
+                  isAutoStreamingAll={isAutoStreamingAll}
                   offlineTracks={offlineTracks}
                   offlineIds={offlineIds}
                   savingIds={savingIds}
@@ -1283,6 +1657,9 @@ export default function App() {
                   onSelectMode={handleSelectMode}
                   onSelectOfflineTab={() => setShowOfflineTab(true)}
                   onSearchSubmit={handleSearchSubmit}
+                  onToggleCaseSensitive={handleToggleCaseSensitive}
+                  onLoadMore={() => void handleLoadMoreTracks()}
+                  onToggleStreamAll={handleToggleStreamAll5000}
                   onPlayNow={(t) => void handlePlayNow(t)}
                   onLoadToDeck={(d, t, auto) => void loadTrackToDeck(d, t, auto)}
                   onAddToQueue={(t) => setQueue((prev) => [...prev, t])}
@@ -1290,7 +1667,8 @@ export default function App() {
                   onRemoveOffline={(id) => void handleRemoveOffline(id)}
                   onDownloadFile={handleDownloadFile}
                   onToggleOfflineBeat={handleToggleOfflineBeat}
-                  onRetry={() => void fetchTracks(activeMode, searchQuery, false, false)}
+                  onInspectTrack={setInspectedTrack}
+                  onRetry={() => void fetchTracks(activeMode, searchQuery, false, false, caseSensitiveSearch)}
                 />
               </div>
 
@@ -1323,7 +1701,7 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-white/8 bg-[#090B10] py-8 px-4 pb-24 md:pb-8 sm:px-6 mt-10">
+      <footer className="relative z-10 border-t border-white/8 bg-[#090B10]/80 backdrop-blur-md py-8 px-4 pb-24 md:pb-8 sm:px-6 mt-10">
         <div className="mx-auto max-w-[1440px] flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="space-y-1">
             <p className="font-display text-base font-bold text-[#F1F3F5]">
@@ -1388,6 +1766,26 @@ export default function App() {
         activeSection={mobileNavActive}
         offlineCount={offlineTracks.length}
         onSelect={handleMobileNavSelect}
+      />
+
+      <SongDetailModal
+        track={inspectedTrack}
+        isSavedOffline={inspectedTrack ? offlineIds.has(inspectedTrack.id) : false}
+        isSavingOffline={inspectedTrack ? savingIds.has(inspectedTrack.id) : false}
+        loadedOnDeckA={Boolean(inspectedTrack && deckA.track?.id === inspectedTrack.id)}
+        loadedOnDeckB={Boolean(inspectedTrack && deckB.track?.id === inspectedTrack.id)}
+        isPlayingOnDeckA={deckA.isPlaying}
+        isPlayingOnDeckB={deckB.isPlaying}
+        onClose={() => setInspectedTrack(null)}
+        onPlayNow={(t) => void handlePlayNow(t)}
+        onLoadToDeck={(d, t) => void loadTrackToDeck(d, t, false)}
+        onAddToQueue={(t) => setQueue((prev) => [...prev, t])}
+        onSaveOffline={(t) => void handleSaveOffline(t)}
+        onDownloadFile={handleDownloadFile}
+        onSuggestSimilar={(t) => {
+          void handleFetchAiSuggestions(t);
+          handleNavigateConsoleSection('ai-picks');
+        }}
       />
     </div>
   );

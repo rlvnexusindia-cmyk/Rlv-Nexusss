@@ -30,7 +30,7 @@ export const AiSmartFilter: React.FC<AiSmartFilterProps> = ({
     <section
       id="ai-filter"
       aria-label="AI Smart Song Filter"
-      className="rounded-2xl border border-white/8 bg-[#12161F] p-4 sm:p-6"
+      className="rounded-2xl border border-white/8 bg-[#12161F]/78 backdrop-blur-xl p-4 sm:p-6"
     >
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Left: Prompt Input & Quick Picks */}

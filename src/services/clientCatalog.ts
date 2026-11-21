@@ -153,23 +153,109 @@ export async function safeParseApiJson<T>(res: Response): Promise<T | null> {
   }
 }
 
+const CLIENT_SEARCH_STOP_WORDS = new Set([
+  'song',
+  'songs',
+  'gaana',
+  'gana',
+  'music',
+  'mp3',
+  'audio',
+  'track',
+  'tracks',
+  'full',
+  'hd',
+  'video',
+  'new',
+  'latest',
+  'hit',
+  'hits',
+  'best',
+  'top',
+  'download',
+  'play',
+]);
+
+export function extractCoreSearchQuery(rawQuery: string): string {
+  const words = rawQuery
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && !CLIENT_SEARCH_STOP_WORDS.has(w.toLowerCase()));
+  return words.join(' ').trim() || rawQuery.trim();
+}
+
+export function matchesTrackKeyword(
+  track: Pick<Track, 'title' | 'artist' | 'album' | 'genre'>,
+  rawQuery: string,
+  caseSensitive: boolean
+): boolean {
+  const q = rawQuery.trim();
+  if (!q) return true;
+  const haystack = `${track.title} ${track.artist} ${track.album} ${track.genre}`;
+  if (caseSensitive) {
+    if (haystack.includes(q)) return true;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return tokens.length > 1 && tokens.every((tok) => haystack.includes(tok));
+  }
+  const lowerHay = haystack.toLowerCase();
+  const core = extractCoreSearchQuery(q).toLowerCase();
+  if (lowerHay.includes(q.toLowerCase()) || (core && lowerHay.includes(core))) {
+    return true;
+  }
+  const coreTokens = core.split(/\s+/).filter((t) => t.length >= 2);
+  if (coreTokens.length === 0) return true;
+  return coreTokens.some((tok) => lowerHay.includes(tok));
+}
+
+export function sortTracksByKeywordRelevance(
+  tracks: Track[],
+  rawQuery: string,
+  caseSensitive: boolean
+): Track[] {
+  const q = rawQuery.trim();
+  if (!q) return tracks;
+  const target = caseSensitive ? q : extractCoreSearchQuery(q).toLowerCase();
+  const tokens = target.split(/\s+/).filter((t) => t.length >= 2);
+  const score = (t: Track) => {
+    const title = caseSensitive ? t.title : t.title.toLowerCase();
+    const artist = caseSensitive ? t.artist : t.artist.toLowerCase();
+    const haystack = caseSensitive
+      ? `${t.title} ${t.artist} ${t.album} ${t.genre}`
+      : `${t.title} ${t.artist} ${t.album} ${t.genre}`.toLowerCase();
+    let s = 0;
+    if (title === target) s += 140;
+    else if (title.startsWith(target)) s += 90;
+    else if (title.includes(target)) s += 60;
+    if (artist.includes(target)) s += 45;
+    if (tokens.length > 0) {
+      const matched = tokens.filter((tok) => haystack.includes(tok)).length;
+      s += matched * 15;
+      if (matched === tokens.length) s += 35;
+    }
+    return s;
+  };
+  return [...tracks].sort((a, b) => score(b) - score(a));
+}
+
 async function fetchDirectSaavnTracks(
   query: string,
   modeTag: DjModeId,
-  limit = 12
-): Promise<Track[]> {
-  if (!query || containsMarathiMarker(query)) return [];
-  const url = `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`;
+  limit = 40,
+  page = 1
+): Promise<{ tracks: Track[]; total: number; rawCount: number }> {
+  if (!query || containsMarathiMarker(query)) return { tracks: [], total: 0, rawCount: 0 };
+  const url = `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&page=${page}&limit=${limit}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), 8500);
 
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return [];
+    if (!res.ok) return { tracks: [], total: 0, rawCount: 0 };
     const payload = await safeParseApiJson<{
-      data?: { results?: Array<Record<string, unknown>> };
+      data?: { total?: number; results?: Array<Record<string, unknown>> };
     }>(res);
     const results = Array.isArray(payload?.data?.results) ? payload.data.results : [];
+    const total = typeof payload?.data?.total === 'number' ? payload.data.total : results.length;
 
     const tracks: Track[] = [];
     for (const item of results) {
@@ -241,9 +327,9 @@ async function fetchDirectSaavnTracks(
         source: 'saavn',
       });
     }
-    return tracks;
+    return { tracks, total, rawCount: results.length };
   } catch {
-    return [];
+    return { tracks: [], total: 0, rawCount: 0 };
   } finally {
     clearTimeout(timer);
   }
@@ -252,16 +338,17 @@ async function fetchDirectSaavnTracks(
 async function fetchDirectAudiusTracks(
   query: string,
   modeTag: DjModeId,
-  limit = 10
-): Promise<Track[]> {
-  if (!query || containsMarathiMarker(query)) return [];
-  const url = `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=RintuBitDJ&limit=${limit}`;
+  limit = 60,
+  offset = 0
+): Promise<{ tracks: Track[]; rawCount: number }> {
+  if (!query || containsMarathiMarker(query)) return { tracks: [], rawCount: 0 };
+  const url = `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=RintuBitDJ&limit=${limit}&offset=${offset}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7000);
+  const timer = setTimeout(() => controller.abort(), 7500);
 
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return [];
+    if (!res.ok) return { tracks: [], rawCount: 0 };
     const data = await safeParseApiJson<{ data?: Array<Record<string, unknown>> }>(res);
     const items = Array.isArray(data?.data) ? data.data : [];
 
@@ -303,19 +390,148 @@ async function fetchDirectAudiusTracks(
         source: 'audius',
       });
     }
-    return tracks;
+    return { tracks, rawCount: items.length };
   } catch {
-    return [];
+    return { tracks: [], rawCount: 0 };
   } finally {
     clearTimeout(timer);
   }
+}
+
+export interface CatalogBatchResult {
+  tracks: Track[];
+  totalAvailable: number;
+  page: number;
+  nextPage: number;
+  hasMore: boolean;
+}
+
+export async function searchPaginatedDirectCatalog(options: {
+  mode: DjModeId;
+  query?: string;
+  page?: number;
+  pagesPerBatch?: number;
+  caseSensitive?: boolean;
+}): Promise<CatalogBatchResult> {
+  const {
+    mode,
+    query = '',
+    page = 1,
+    pagesPerBatch = query.trim() ? 5 : 2,
+    caseSensitive = false,
+  } = options;
+  const trimmed = query.trim();
+  const coreQuery = trimmed ? extractCoreSearchQuery(trimmed) : '';
+  const searchQueryList =
+    trimmed && coreQuery.toLowerCase() !== trimmed.toLowerCase()
+      ? [trimmed, coreQuery]
+      : [trimmed];
+  const cfg = CLIENT_MODE_QUERIES[mode] || CLIENT_MODE_QUERIES.banger;
+  const saavnQueries = trimmed ? searchQueryList : cfg.saavnQueries;
+  const audiusQueries = trimmed ? searchQueryList : cfg.audiusQueries;
+  const preferAudius = trimmed ? false : Boolean(cfg.preferAudius);
+
+  const safeSaavn = saavnQueries.filter((q) => !containsMarathiMarker(q));
+  const safeAudius = audiusQueries.filter((q) => !containsMarathiMarker(q));
+  if (safeSaavn.length === 0 && safeAudius.length === 0) {
+    return { tracks: [], totalAvailable: 0, page, nextPage: page, hasMore: false };
+  }
+
+  const pageNumbers = Array.from({ length: pagesPerBatch }, (_, idx) => page + idx);
+  const audiusOffset = Math.max(0, Math.floor((page - 1) / Math.max(1, pagesPerBatch)) * 80);
+
+  const [saavnResults, audiusResults] = await Promise.all([
+    Promise.all(safeSaavn.flatMap((q) => pageNumbers.map((p) => fetchDirectSaavnTracks(q, mode, 40, p)))),
+    Promise.all(safeAudius.map((q) => fetchDirectAudiusTracks(q, mode, 80, audiusOffset))),
+  ]);
+
+  const saavnFlat = saavnResults.flatMap((r) => r.tracks);
+  const audiusFlat = audiusResults.flatMap((r) => r.tracks);
+  const saavnRawTotal = saavnResults.reduce((acc, r) => acc + r.rawCount, 0);
+  const audiusRawTotal = audiusResults.reduce((acc, r) => acc + r.rawCount, 0);
+  const maxSaavnTotal = saavnResults.reduce((mx, r) => Math.max(mx, r.total), 0);
+
+  const combined = preferAudius ? [...audiusFlat, ...saavnFlat] : [...saavnFlat, ...audiusFlat];
+
+  const seen = new Set<string>();
+  const deduped: Track[] = [];
+  const apiFallbackPool: Track[] = [];
+  for (const track of combined) {
+    if (track.durationSec < 60 || isMarathiTrackMeta(track)) continue;
+    const normKey = `${track.title.toLowerCase().trim()}::${track.artist.toLowerCase().split(',')[0].trim()}`;
+    if (seen.has(normKey)) continue;
+    seen.add(normKey);
+
+    if (trimmed) {
+      if (matchesTrackKeyword(track, trimmed, caseSensitive)) {
+        deduped.push(track);
+      } else if (!caseSensitive) {
+        apiFallbackPool.push(track);
+      }
+    } else {
+      deduped.push(track);
+    }
+  }
+
+  if (trimmed && !caseSensitive && deduped.length < 18 && apiFallbackPool.length > 0) {
+    deduped.push(...apiFallbackPool);
+  }
+
+  const sorted = trimmed ? sortTracksByKeywordRelevance(deduped, trimmed, caseSensitive) : deduped;
+  const nextPage = page + pagesPerBatch;
+
+  return {
+    tracks: sorted,
+    totalAvailable: Math.max(sorted.length, maxSaavnTotal + audiusFlat.length),
+    page,
+    nextPage,
+    hasMore: (saavnRawTotal >= 10 || audiusRawTotal >= 20) && nextPage <= 165,
+  };
+}
+
+export async function fetchQuickSearchSuggestions(
+  query: string,
+  mode: DjModeId,
+  caseSensitive = false
+): Promise<Track[]> {
+  const clean = query.trim();
+  if (clean.length < 2 || containsMarathiMarker(clean)) return [];
+
+  try {
+    const params = new URLSearchParams({
+      genre: mode,
+      q: clean,
+      page: '1',
+      pages: '1',
+      caseSensitive: caseSensitive ? '1' : '0',
+    });
+    const res = await fetch(`/api/tracks?${params.toString()}`);
+    const data = await safeParseApiJson<{ tracks?: Track[] }>(res);
+    if (res.ok && data && Array.isArray(data.tracks) && data.tracks.length > 0) {
+      return data.tracks.filter((t) => !isMarathiTrackMeta(t)).slice(0, 8);
+    }
+  } catch {
+    // Fall back to direct Saavn + Audius lookup below
+  }
+
+  const core = extractCoreSearchQuery(clean);
+  const [saavnRes, audiusRes] = await Promise.all([
+    fetchDirectSaavnTracks(core || clean, mode, 10, 1),
+    fetchDirectAudiusTracks(core || clean, mode, 6, 0),
+  ]);
+  const combined = [...saavnRes.tracks, ...audiusRes.tracks].filter((t) => !isMarathiTrackMeta(t));
+  const sorted = sortTracksByKeywordRelevance(combined, clean, caseSensitive);
+  if (caseSensitive) {
+    return sorted.filter((t) => matchesTrackKeyword(t, clean, true)).slice(0, 8);
+  }
+  return sorted.slice(0, 8);
 }
 
 export async function searchDirectFullCatalog(
   saavnQueries: string[],
   audiusQueries: string[],
   modeTag: DjModeId,
-  maxResults = 24,
+  maxResults = 40,
   preferAudius = false
 ): Promise<Track[]> {
   const safeSaavn = saavnQueries.filter((q) => !containsMarathiMarker(q));
@@ -323,12 +539,12 @@ export async function searchDirectFullCatalog(
   if (safeSaavn.length === 0 && safeAudius.length === 0) return [];
 
   const [saavnBatches, audiusBatches] = await Promise.all([
-    Promise.all(safeSaavn.map((q) => fetchDirectSaavnTracks(q, modeTag, 12))),
-    Promise.all(safeAudius.map((q) => fetchDirectAudiusTracks(q, modeTag, 10))),
+    Promise.all(safeSaavn.map((q) => fetchDirectSaavnTracks(q, modeTag, 24, 1))),
+    Promise.all(safeAudius.map((q) => fetchDirectAudiusTracks(q, modeTag, 24, 0))),
   ]);
 
-  const saavnFlat = saavnBatches.flat();
-  const audiusFlat = audiusBatches.flat();
+  const saavnFlat = saavnBatches.flatMap((b) => b.tracks);
+  const audiusFlat = audiusBatches.flatMap((b) => b.tracks);
   const combined = preferAudius ? [...audiusFlat, ...saavnFlat] : [...saavnFlat, ...audiusFlat];
 
   const seen = new Set<string>();
@@ -346,18 +562,8 @@ export async function searchDirectFullCatalog(
 }
 
 export async function fetchDirectCatalog(mode: DjModeId, query = ''): Promise<Track[]> {
-  const trimmed = query.trim();
-  if (trimmed) {
-    return searchDirectFullCatalog([trimmed], [trimmed], mode, 24, false);
-  }
-  const cfg = CLIENT_MODE_QUERIES[mode] || CLIENT_MODE_QUERIES.banger;
-  return searchDirectFullCatalog(
-    cfg.saavnQueries,
-    cfg.audiusQueries,
-    mode,
-    24,
-    Boolean(cfg.preferAudius)
-  );
+  const batch = await searchPaginatedDirectCatalog({ mode, query, page: 1, pagesPerBatch: query.trim() ? 4 : 2 });
+  return batch.tracks;
 }
 
 function inferModeFromPrompt(prompt: string, fallbackMode: DjModeId): DjModeId {

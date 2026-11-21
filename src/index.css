@@ -51,9 +51,115 @@
   animation-play-state: paused;
 }
 
+@keyframes orbit-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes orbit-spin-reverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes party-pulse-ring {
+  0%, 100% {
+    transform: scale(0.98);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 0.85;
+  }
+}
+
+.animate-orbit-slow {
+  animation: orbit-spin 7s linear infinite;
+}
+
+.animate-orbit-reverse {
+  animation: orbit-spin-reverse 10s linear infinite;
+}
+
+.animate-party-ring {
+  animation: party-pulse-ring 2.2s ease-in-out infinite;
+}
+
+@keyframes modal-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.84) translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes cover-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes vinyl-slide-out {
+  from {
+    opacity: 0;
+    transform: translate(-36%, -50%) rotate(-35deg);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, -50%) rotate(0deg);
+  }
+}
+
+.animate-modal-fade {
+  animation: modal-fade-in 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-modal-zoom {
+  animation: modal-zoom-in 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-cover-reveal {
+  animation: cover-reveal 360ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-vinyl-slide-out {
+  animation: vinyl-slide-out 480ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-vinyl,
-  .animate-vinyl-paused {
+  .animate-vinyl-paused,
+  .animate-orbit-slow,
+  .animate-orbit-reverse,
+  .animate-party-ring,
+  .animate-modal-fade,
+  .animate-modal-zoom,
+  .animate-cover-reveal,
+  .animate-vinyl-slide-out {
     animation: none !important;
   }
 }

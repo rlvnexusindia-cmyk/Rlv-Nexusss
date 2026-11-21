@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowLeftRight, Flame, Headphones, Radio, Volume2, Zap } from 'lucide-react';
+import { ArrowLeftRight, Flame, Headphones, Radio, Sparkles, Volume2, Zap } from 'lucide-react';
 import type { DjFxType } from '../audio/djAudioEngine';
 import { AudioVisualizer, type ActiveVisualizerDeck } from './AudioVisualizer';
 
@@ -10,6 +10,9 @@ interface MasterMixerProps {
   is8dEnabled: boolean;
   autoDj20s: boolean;
   autoDjCountdown: number;
+  autoDjMode: 'two_song' | 'playlist';
+  autoDjIntervalSec: 12 | 20;
+  partyLightsEnabled: boolean;
   isAnyPlaying: boolean;
   activeDeck: ActiveVisualizerDeck;
   activeTrackTitle: string | null;
@@ -19,6 +22,10 @@ interface MasterMixerProps {
   onToggleBangerMode: () => void;
   onToggle8dMode: () => void;
   onToggleAutoDj20s: () => void;
+  onToggleAutoDjMode: () => void;
+  onToggleAutoDjInterval: () => void;
+  onInstantMashupCut: () => void;
+  onTogglePartyLights: () => void;
   onTriggerCrossfadeMix: () => void;
   onTriggerFx: (fx: DjFxType) => void;
 }
@@ -30,6 +37,9 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
   is8dEnabled,
   autoDj20s,
   autoDjCountdown,
+  autoDjMode,
+  autoDjIntervalSec,
+  partyLightsEnabled,
   isAnyPlaying,
   activeDeck,
   activeTrackTitle,
@@ -39,6 +49,10 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
   onToggleBangerMode,
   onToggle8dMode,
   onToggleAutoDj20s,
+  onToggleAutoDjMode,
+  onToggleAutoDjInterval,
+  onInstantMashupCut,
+  onTogglePartyLights,
   onTriggerCrossfadeMix,
   onTriggerFx,
 }) => {
@@ -48,27 +62,45 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
   return (
     <section
       aria-label="Master Mixer Console"
-      className="flex h-full flex-col justify-between gap-4 rounded-2xl border border-white/8 bg-[#12161F] p-4 sm:p-5"
+      className={`flex h-full flex-col justify-between gap-4 rounded-2xl border bg-[#12161F]/78 backdrop-blur-xl p-4 sm:p-5 transition-colors duration-300 ${
+        isAnyPlaying && partyLightsEnabled ? 'border-amber-500/25' : 'border-white/8'
+      }`}
     >
-      {/* Master Header + Banger Mode Toggle */}
-      <div className="flex items-center justify-between gap-3 border-b border-white/8 pb-3">
-        <div>
-          <h2 className="font-display text-base font-bold text-[#F1F3F5]">Master Mixer</h2>
-          <p className="text-xs text-[#9CA3AF]">Crossfade, Bass &amp; Live FX</p>
+      {/* Master Header + Party FX & Banger Mode Toggles */}
+      <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-3">
+        <div className="min-w-0">
+          <h2 className="font-display text-base font-bold text-[#F1F3F5] truncate">Master Mixer</h2>
+          <p className="text-xs text-[#9CA3AF] truncate">Crossfade, Bass &amp; Live FX</p>
         </div>
-        <button
-          type="button"
-          onClick={onToggleBangerMode}
-          aria-pressed={bangerMode}
-          className={`inline-flex min-h-[42px] sm:min-h-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-            bangerMode
-              ? 'bg-amber-500 text-[#090B10] hover:bg-amber-400'
-              : 'border border-white/10 bg-[#1A1E28] text-[#D1D5DB] hover:bg-[#232836]'
-          }`}
-        >
-          <Flame className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>{bangerMode ? 'Banger Boost On' : 'Banger Mode'}</span>
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={onTogglePartyLights}
+            aria-pressed={partyLightsEnabled}
+            title="Toggle blurred DJ party backdrop lights"
+            className={`inline-flex min-h-[40px] sm:min-h-0 items-center gap-1 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              partyLightsEnabled
+                ? 'border border-sky-400/50 bg-sky-400/15 text-sky-300 hover:bg-sky-400/25'
+                : 'border border-white/10 bg-[#1A1E28] text-[#9CA3AF] hover:bg-[#232836] hover:text-[#F1F3F5]'
+            }`}
+          >
+            <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>Party FX</span>
+          </button>
+          <button
+            type="button"
+            onClick={onToggleBangerMode}
+            aria-pressed={bangerMode}
+            className={`inline-flex min-h-[40px] sm:min-h-0 items-center gap-1 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              bangerMode
+                ? 'bg-amber-500 text-[#090B10] hover:bg-amber-400'
+                : 'border border-white/10 bg-[#1A1E28] text-[#D1D5DB] hover:bg-[#232836]'
+            }`}
+          >
+            <Flame className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>{bangerMode ? 'Banger On' : 'Banger'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Master Audio Visualizer above the crossfader */}
@@ -130,7 +162,7 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
           <span>{isAutoTransitioning ? 'Mixing Decks...' : 'Smooth Mix Switch (A ↔ B)'}</span>
         </button>
 
-        {/* Auto DJ 20s Cut Mashup & 8D Spatial Audio Controls */}
+        {/* Auto DJ 2-Song Cut Mashup & 8D Spatial Audio Controls */}
         <div className="mt-2.5 grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -144,7 +176,9 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
           >
             <Radio className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span>
-              {autoDj20s ? `Auto DJ · ${autoDjCountdown}s` : 'Auto DJ (20s)'}
+              {autoDj20s
+                ? `${autoDjMode === 'two_song' ? '2-Song Cut' : 'Queue Auto'} · ${autoDjCountdown}s`
+                : `Auto DJ (${autoDjIntervalSec}s)`}
             </span>
           </button>
 
@@ -160,6 +194,39 @@ export const MasterMixer: React.FC<MasterMixerProps> = ({
           >
             <Headphones className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span>{is8dEnabled ? '8D Audio On' : '8D Audio'}</span>
+          </button>
+        </div>
+
+        {/* Fine-grained 2-Song Cut Mashup Options */}
+        <div className="mt-2 grid grid-cols-3 gap-1.5">
+          <button
+            type="button"
+            onClick={onToggleAutoDjMode}
+            title="Switch between cutting 2 loaded songs back & forth or cycling through Queue"
+            className={`min-h-[36px] rounded-lg border px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+              autoDjMode === 'two_song'
+                ? 'border-emerald-400/50 bg-emerald-400/12 text-emerald-300'
+                : 'border-white/10 bg-[#1A1E28] text-[#9CA3AF] hover:text-[#F1F3F5]'
+            }`}
+          >
+            {autoDjMode === 'two_song' ? '2-Song Cut' : 'Queue Mix'}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleAutoDjInterval}
+            title="Switch auto cut timer between 12 seconds and 20 seconds"
+            className="min-h-[36px] rounded-lg border border-white/10 bg-[#1A1E28] px-2 py-1 text-[11px] font-mono-tabular font-medium text-[#D1D5DB] hover:bg-[#232836] transition-colors cursor-pointer whitespace-nowrap"
+          >
+            Every {autoDjIntervalSec}s
+          </button>
+          <button
+            type="button"
+            onClick={onInstantMashupCut}
+            disabled={isAutoTransitioning}
+            title="Cut & blend into the other song right now"
+            className="min-h-[36px] rounded-lg border border-amber-500/35 bg-amber-500/12 px-2 py-1 text-[11px] font-semibold text-amber-300 hover:bg-amber-500/22 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-45"
+          >
+            Cut Now
           </button>
         </div>
       </div>

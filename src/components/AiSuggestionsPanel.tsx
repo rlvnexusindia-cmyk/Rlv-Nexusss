@@ -20,6 +20,7 @@ interface AiSuggestionsPanelProps {
   offlineIds: Set<string>;
   savingIds: Set<string>;
   onRefreshSuggestions: () => void;
+  onInspectTrack?: (track: Track) => void;
   onPlayNow: (track: Track) => void;
   onLoadToDeck: (deckId: DeckId, track: Track) => void;
   onAddToQueue: (track: Track) => void;
@@ -59,6 +60,7 @@ export const AiSuggestionsPanel: React.FC<AiSuggestionsPanelProps> = ({
   offlineIds,
   savingIds,
   onRefreshSuggestions,
+  onInspectTrack,
   onPlayNow,
   onLoadToDeck,
   onAddToQueue,
@@ -69,7 +71,7 @@ export const AiSuggestionsPanel: React.FC<AiSuggestionsPanelProps> = ({
     <section
       id="ai-picks"
       aria-label="AI Suggested New Songs"
-      className="rounded-2xl border border-white/8 bg-[#12161F] p-4 sm:p-6 space-y-4"
+      className="rounded-2xl border border-white/8 bg-[#12161F]/78 backdrop-blur-xl p-4 sm:p-6 space-y-4"
     >
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -152,13 +154,31 @@ export const AiSuggestionsPanel: React.FC<AiSuggestionsPanelProps> = ({
             return (
               <article
                 key={track.id}
-                className="flex flex-col justify-between gap-3 rounded-xl border border-white/8 bg-[#0B0D11]/85 p-3.5 hover:border-white/15 transition-colors"
+                onClick={() => onInspectTrack?.(track)}
+                className="flex flex-col justify-between gap-3 rounded-xl border border-white/8 bg-[#0B0D11]/85 p-3.5 hover:border-white/20 transition-colors cursor-pointer"
               >
-                <div className="space-y-2">
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onInspectTrack?.(track);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onInspectTrack?.(track);
+                    }
+                  }}
+                  title="Click to view enlarged cover & song details"
+                  className="group space-y-2 cursor-pointer rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                >
                   <div className="flex items-center gap-3 min-w-0">
-                    <SuggestionArt src={track.artworkUrl} alt={track.title} />
+                    <div className="transition-transform duration-200 group-hover:scale-[1.04]">
+                      <SuggestionArt src={track.artworkUrl} alt={track.title} />
+                    </div>
                     <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-semibold text-[#F1F3F5] truncate">
+                      <h3 className="text-sm font-semibold text-[#F1F3F5] group-hover:text-amber-300 transition-colors truncate">
                         {track.title}
                       </h3>
                       <p className="text-xs text-[#9CA3AF] truncate">
@@ -173,7 +193,10 @@ export const AiSuggestionsPanel: React.FC<AiSuggestionsPanelProps> = ({
                   <p className="text-xs leading-relaxed text-[#D1D5DB]">{aiReason}</p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-white/6">
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-white/6"
+                >
                   <button
                     type="button"
                     onClick={() => onPlayNow(track)}

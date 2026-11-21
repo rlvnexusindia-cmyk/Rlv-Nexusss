@@ -183,27 +183,114 @@ function createProxiedUrl(rawUrl: string): string {
   return `/api/audio-proxy?url=${encodeURIComponent(rawUrl)}`;
 }
 
-const trackCache = new Map<string, { timestamp: number; tracks: ServerTrack[] }>();
+const trackCache = new Map<
+  string,
+  { timestamp: number; tracks: ServerTrack[]; totalAvailable: number; saavnBatchCount: number; audiusBatchCount: number }
+>();
 const CACHE_TTL_MS = 15 * 60 * 1000;
+
+const SEARCH_STOP_WORDS = new Set([
+  'song',
+  'songs',
+  'gaana',
+  'gana',
+  'music',
+  'mp3',
+  'audio',
+  'track',
+  'tracks',
+  'full',
+  'hd',
+  'video',
+  'new',
+  'latest',
+  'hit',
+  'hits',
+  'best',
+  'top',
+  'download',
+  'play',
+]);
+
+function extractCoreQuery(rawQuery: string): string {
+  const words = rawQuery
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0 && !SEARCH_STOP_WORDS.has(w.toLowerCase()));
+  return words.join(' ').trim() || rawQuery.trim();
+}
+
+export function matchesServerKeyword(
+  track: Pick<ServerTrack, 'title' | 'artist' | 'album' | 'genre'>,
+  rawQuery: string,
+  caseSensitive: boolean
+): boolean {
+  const q = rawQuery.trim();
+  if (!q) return true;
+  const haystack = `${track.title} ${track.artist} ${track.album} ${track.genre}`;
+  if (caseSensitive) {
+    if (haystack.includes(q)) return true;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return tokens.length > 1 && tokens.every((tok) => haystack.includes(tok));
+  }
+  const lowerHay = haystack.toLowerCase();
+  const core = extractCoreQuery(q).toLowerCase();
+  if (lowerHay.includes(q.toLowerCase()) || (core && lowerHay.includes(core))) {
+    return true;
+  }
+  const coreTokens = core.split(/\s+/).filter((t) => t.length >= 2);
+  if (coreTokens.length === 0) return true;
+  return coreTokens.some((tok) => lowerHay.includes(tok));
+}
+
+function scoreKeywordRelevance(
+  track: Pick<ServerTrack, 'title' | 'artist' | 'album' | 'genre'>,
+  rawQuery: string,
+  caseSensitive: boolean
+): number {
+  const q = rawQuery.trim();
+  if (!q) return 0;
+  const title = caseSensitive ? track.title : track.title.toLowerCase();
+  const artist = caseSensitive ? track.artist : track.artist.toLowerCase();
+  const haystack = caseSensitive
+    ? `${track.title} ${track.artist} ${track.album} ${track.genre}`
+    : `${track.title} ${track.artist} ${track.album} ${track.genre}`.toLowerCase();
+  const target = caseSensitive ? q : extractCoreQuery(q).toLowerCase();
+  let score = 0;
+  if (title === target) score += 140;
+  else if (title.startsWith(target)) score += 90;
+  else if (title.includes(target)) score += 60;
+  if (artist.includes(target)) score += 45;
+
+  const tokens = target.split(/\s+/).filter((t) => t.length >= 2);
+  if (tokens.length > 0) {
+    const matchedCount = tokens.filter((tok) => haystack.includes(tok)).length;
+    score += matchedCount * 15;
+    if (matchedCount === tokens.length) score += 35;
+  }
+  return score;
+}
 
 async function fetchSaavnFullTracks(
   query: string,
   modeTag: DjModeId,
-  limit = 14
-): Promise<ServerTrack[]> {
-  if (containsMarathiMarker(query)) return [];
-  const url = `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`;
+  limit = 40,
+  page = 1
+): Promise<{ tracks: ServerTrack[]; total: number; rawCount: number }> {
+  if (containsMarathiMarker(query)) return { tracks: [], total: 0, rawCount: 0 };
+  const url = `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&page=${page}&limit=${limit}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7000);
+  const timer = setTimeout(() => controller.abort(), 8000);
 
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return [];
+    if (!res.ok) return { tracks: [], total: 0, rawCount: 0 };
     const payload = (await res.json()) as {
       success?: boolean;
-      data?: { results?: Array<Record<string, unknown>> };
+      data?: { total?: number; results?: Array<Record<string, unknown>> };
     };
     const results = Array.isArray(payload?.data?.results) ? payload.data.results : [];
+    const total = typeof payload?.data?.total === 'number' ? payload.data.total : results.length;
 
     const tracks: ServerTrack[] = [];
     for (const item of results) {
@@ -269,9 +356,9 @@ async function fetchSaavnFullTracks(
         source: 'saavn',
       });
     }
-    return tracks;
+    return { tracks, total, rawCount: results.length };
   } catch {
-    return [];
+    return { tracks: [], total: 0, rawCount: 0 };
   } finally {
     clearTimeout(timer);
   }
@@ -280,16 +367,17 @@ async function fetchSaavnFullTracks(
 async function fetchAudiusFullTracks(
   query: string,
   modeTag: DjModeId,
-  limit = 10
-): Promise<ServerTrack[]> {
-  if (containsMarathiMarker(query)) return [];
-  const url = `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=RintuBitDJ&limit=${limit}`;
+  limit = 60,
+  offset = 0
+): Promise<{ tracks: ServerTrack[]; rawCount: number }> {
+  if (containsMarathiMarker(query)) return { tracks: [], rawCount: 0 };
+  const url = `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(query)}&app_name=RintuBitDJ&limit=${limit}&offset=${offset}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5500);
+  const timer = setTimeout(() => controller.abort(), 6500);
 
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return [];
+    if (!res.ok) return { tracks: [], rawCount: 0 };
     const data = (await res.json()) as { data?: Array<Record<string, unknown>> };
     const items = Array.isArray(data.data) ? data.data : [];
 
@@ -332,9 +420,9 @@ async function fetchAudiusFullTracks(
         source: 'audius',
       });
     }
-    return tracks;
+    return { tracks, rawCount: items.length };
   } catch {
-    return [];
+    return { tracks: [], rawCount: 0 };
   } finally {
     clearTimeout(timer);
   }
@@ -344,26 +432,20 @@ async function searchFullSongCatalog(
   saavnQueries: string[],
   audiusQueries: string[],
   modeTag: DjModeId,
-  maxResults = 24,
+  maxResults = 40,
   preferAudius = false
 ): Promise<ServerTrack[]> {
   const safeSaavn = saavnQueries.filter((q) => !containsMarathiMarker(q));
   const safeAudius = audiusQueries.filter((q) => !containsMarathiMarker(q));
   if (safeSaavn.length === 0 && safeAudius.length === 0) return [];
 
-  const cacheKey = `full::${modeTag}::${preferAudius}::${safeSaavn.join('|')}::${safeAudius.join('|')}::${maxResults}`;
-  const cached = trackCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.tracks;
-  }
-
   const [saavnBatches, audiusBatches] = await Promise.all([
-    Promise.all(safeSaavn.map((q) => fetchSaavnFullTracks(q, modeTag, 12))),
-    Promise.all(safeAudius.map((q) => fetchAudiusFullTracks(q, modeTag, 10))),
+    Promise.all(safeSaavn.map((q) => fetchSaavnFullTracks(q, modeTag, 24, 1))),
+    Promise.all(safeAudius.map((q) => fetchAudiusFullTracks(q, modeTag, 24, 0))),
   ]);
 
-  const saavnFlat = saavnBatches.flat();
-  const audiusFlat = audiusBatches.flat();
+  const saavnFlat = saavnBatches.flatMap((b) => b.tracks);
+  const audiusFlat = audiusBatches.flatMap((b) => b.tracks);
 
   const combined = preferAudius
     ? [...audiusFlat, ...saavnFlat]
@@ -372,8 +454,7 @@ async function searchFullSongCatalog(
   const seen = new Set<string>();
   const deduped: ServerTrack[] = [];
   for (const track of combined) {
-    if (track.durationSec < 60) continue;
-    if (isMarathiTrackMeta(track)) continue;
+    if (track.durationSec < 60 || isMarathiTrackMeta(track)) continue;
     const normKey = `${track.title.toLowerCase().replace(/\s*\([^)]*\)/g, '').trim()}::${track.artist.toLowerCase().split(',')[0].trim()}`;
     if (seen.has(normKey)) continue;
     seen.add(normKey);
@@ -381,10 +462,132 @@ async function searchFullSongCatalog(
     if (deduped.length >= maxResults) break;
   }
 
-  if (deduped.length > 0) {
-    trackCache.set(cacheKey, { timestamp: Date.now(), tracks: deduped });
-  }
   return deduped;
+}
+
+async function searchPaginatedCatalog(options: {
+  query: string;
+  saavnQueries: string[];
+  audiusQueries: string[];
+  modeTag: DjModeId;
+  page: number;
+  pagesPerBatch: number;
+  caseSensitive: boolean;
+  preferAudius?: boolean;
+}): Promise<{
+  tracks: ServerTrack[];
+  totalAvailable: number;
+  page: number;
+  nextPage: number;
+  hasMore: boolean;
+}> {
+  const {
+    query,
+    saavnQueries,
+    audiusQueries,
+    modeTag,
+    page,
+    pagesPerBatch,
+    caseSensitive,
+    preferAudius = false,
+  } = options;
+
+  const safeSaavn = saavnQueries.filter((q) => !containsMarathiMarker(q));
+  const safeAudius = audiusQueries.filter((q) => !containsMarathiMarker(q));
+  if (safeSaavn.length === 0 && safeAudius.length === 0) {
+    return { tracks: [], totalAvailable: 0, page, nextPage: page, hasMore: false };
+  }
+
+  const cacheKey = `paged::${modeTag}::${query}::${page}::${pagesPerBatch}::${caseSensitive ? 'cs' : 'ci'}`;
+  const cached = trackCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return {
+      tracks: cached.tracks,
+      totalAvailable: cached.totalAvailable,
+      page,
+      nextPage: page + pagesPerBatch,
+      hasMore: (cached.saavnBatchCount > 0 || cached.audiusBatchCount > 0) && page + pagesPerBatch <= 160,
+    };
+  }
+
+  const pageNumbers = Array.from({ length: pagesPerBatch }, (_, idx) => page + idx);
+  const audiusOffset = Math.max(0, Math.floor((page - 1) / Math.max(1, pagesPerBatch)) * 80);
+
+  const saavnPromises = safeSaavn.flatMap((q) =>
+    pageNumbers.map((p) => fetchSaavnFullTracks(q, modeTag, 40, p))
+  );
+  const audiusPromises = safeAudius.map((q) =>
+    fetchAudiusFullTracks(q, modeTag, 80, audiusOffset)
+  );
+
+  const [saavnResults, audiusResults] = await Promise.all([
+    Promise.all(saavnPromises),
+    Promise.all(audiusPromises),
+  ]);
+
+  const saavnFlat = saavnResults.flatMap((r) => r.tracks);
+  const audiusFlat = audiusResults.flatMap((r) => r.tracks);
+  const saavnRawTotal = saavnResults.reduce((acc, r) => acc + r.rawCount, 0);
+  const audiusRawTotal = audiusResults.reduce((acc, r) => acc + r.rawCount, 0);
+  const maxSaavnTotal = saavnResults.reduce((mx, r) => Math.max(mx, r.total), 0);
+
+  const combined = preferAudius ? [...audiusFlat, ...saavnFlat] : [...saavnFlat, ...audiusFlat];
+
+  const seen = new Set<string>();
+  const deduped: ServerTrack[] = [];
+  const apiFallbackPool: ServerTrack[] = [];
+  for (const track of combined) {
+    if (track.durationSec < 60 || isMarathiTrackMeta(track)) continue;
+    const normKey = `${track.title.toLowerCase().trim()}::${track.artist.toLowerCase().split(',')[0].trim()}`;
+    if (seen.has(normKey)) continue;
+    seen.add(normKey);
+
+    if (query) {
+      if (matchesServerKeyword(track, query, caseSensitive)) {
+        deduped.push(track);
+      } else if (!caseSensitive) {
+        apiFallbackPool.push(track);
+      }
+    } else {
+      deduped.push(track);
+    }
+  }
+
+  // If user isn't in strict Case-Sensitive mode and strict token matching left sparse hits,
+  // include upstream Saavn/Audius full-text search results ranked beneath direct keyword hits.
+  if (query && !caseSensitive && deduped.length < 18 && apiFallbackPool.length > 0) {
+    deduped.push(...apiFallbackPool);
+  }
+
+  if (query) {
+    deduped.sort(
+      (a, b) =>
+        scoreKeywordRelevance(b, query, caseSensitive) -
+        scoreKeywordRelevance(a, query, caseSensitive)
+    );
+  }
+
+  const totalAvailable = Math.max(deduped.length, maxSaavnTotal + audiusFlat.length);
+  const nextPage = page + pagesPerBatch;
+  const hasMore = (saavnRawTotal >= 10 || audiusRawTotal >= 20) && nextPage <= 165;
+
+  if (deduped.length > 0) {
+    trackCache.set(cacheKey, {
+      timestamp: Date.now(),
+      tracks: deduped,
+      totalAvailable,
+      saavnBatchCount: saavnRawTotal,
+      audiusBatchCount: audiusRawTotal,
+    });
+  }
+
+  return {
+    tracks: deduped,
+    totalAvailable,
+    page,
+    nextPage,
+    hasMore,
+  };
 }
 
 function isAllowedAudioHost(urlStr: string): boolean {
@@ -422,11 +625,14 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // 1. Full-Length World & Indian Music Catalog Endpoint (Zero-Key, No 30s Clips, Marathi Blocked)
+  // 1. Full-Length World & Indian Music Catalog Endpoint (Multi-page up to 5,000+ songs, Keyword-Sensitive, Marathi Blocked)
   app.get('/api/tracks', async (req: Request, res: Response) => {
     try {
       const genreParam = typeof req.query.genre === 'string' ? req.query.genre.toLowerCase() : 'banger';
       const queryParam = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      const pageParam = Math.max(1, Number(req.query.page ?? 1) || 1);
+      const pagesParam = Math.max(1, Math.min(8, Number(req.query.pages ?? (queryParam ? 5 : 2)) || 2));
+      const caseSensitive = req.query.caseSensitive === '1' || req.query.caseSensitive === 'true';
 
       if (queryParam && containsMarathiMarker(queryParam)) {
         res.status(403).json({
@@ -434,6 +640,9 @@ async function startServer() {
           error:
             'Marathi songs are blocked on Rintu Bit DJ. Search any Hindi, 90s, Bhojpuri, Haryanvi, Punjabi, Tamil, or Global song instead.',
           tracks: [],
+          totalAvailable: 0,
+          hasMore: false,
+          nextPage: 1,
         });
         return;
       }
@@ -444,20 +653,42 @@ async function startServer() {
         : 'banger';
 
       const modeConfig = MODE_SEARCH_QUERIES[mode];
-      const tracks = queryParam
-        ? await searchFullSongCatalog([queryParam], [queryParam], mode, 24, false)
-        : await searchFullSongCatalog(
-            modeConfig.saavnQueries,
-            modeConfig.audiusQueries,
-            mode,
-            24,
-            Boolean(modeConfig.preferAudius)
-          );
+      const coreQuery = queryParam ? extractCoreQuery(queryParam) : '';
+      const searchQueryList =
+        coreQuery && coreQuery.toLowerCase() !== queryParam.toLowerCase()
+          ? [queryParam, coreQuery]
+          : [queryParam];
+
+      const result = queryParam
+        ? await searchPaginatedCatalog({
+            query: queryParam,
+            saavnQueries: searchQueryList,
+            audiusQueries: searchQueryList,
+            modeTag: mode,
+            page: pageParam,
+            pagesPerBatch: pagesParam,
+            caseSensitive,
+            preferAudius: false,
+          })
+        : await searchPaginatedCatalog({
+            query: '',
+            saavnQueries: modeConfig.saavnQueries,
+            audiusQueries: modeConfig.audiusQueries,
+            modeTag: mode,
+            page: pageParam,
+            pagesPerBatch: pagesParam,
+            caseSensitive: false,
+            preferAudius: Boolean(modeConfig.preferAudius),
+          });
 
       res.json({
         mode,
         query: queryParam || null,
-        tracks,
+        tracks: result.tracks,
+        totalAvailable: result.totalAvailable,
+        page: result.page,
+        nextPage: result.nextPage,
+        hasMore: result.hasMore,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Failed to fetch full-song catalog.';
@@ -550,68 +781,102 @@ async function startServer() {
 
       const ai = getGeminiClient();
 
-      const aiResponse = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
+      const filterPromptConfig = {
         contents: `User DJ Request: "${promptText}"\nCurrent Console Mode: "${currentMode}"`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction:
-            'You are Rintu Bit DJ AI Curator specializing in ALL full-length world & Indian music EXCEPT Marathi: ' +
-            'Global Hits, EDM/House, Hip-Hop/Rap, Latin/Reggaeton, K-Pop, Arabic/Sufi, Banger Mode, Dance, Romance, Chill, Shaadi, 90s Bollywood (Kumar Sanu, Udit Narayan, Alka Yagnik), Bhojpuri (Pawan Singh, Khesari Lal Yadav), Haryanvi (Sapna Choudhary, Masoom Sharma), Punjabi (Sidhu Moose Wala, Diljit Dosanjh, Karan Aujla, AP Dhillon, Shubh), and Tamil (Anirudh Ravichander, AR Rahman, Vijay). ' +
-            'STRICT RULE: NEVER suggest, search for, or include ANY Marathi songs, Marathi artists (e.g. Ajay-Atul, Adarsh Shinde, Sanju Rathod, Kratex, Avadhoot Gupte, Bela Shende), or Marathi albums. ' +
-            'Generate 2 to 3 crisp single-artist or focused song queries (e.g. "Pawan Singh", "Sapna Choudhary", "Kumar Sanu", "Anirudh", "Alan Walker") for clean full-track lookup.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              setTitle: {
-                type: Type.STRING,
-                description: 'Short evocative DJ set name (max 5 words).',
-              },
-              djNote: {
-                type: Type.STRING,
-                description: 'One-sentence energetic DJ mixing tip or track vibe summary.',
-              },
-              recommendedMode: {
-                type: Type.STRING,
-                description:
-                  'One of: banger, dance, romance, chill, shaadi, 90s, bhojpuri, haryanvi, punjabi, tamil, global, edm, hiphop, latin, kpop, arabic.',
-              },
-              searchQueries: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: '2 to 3 crisp non-Marathi artist or song search queries.',
-              },
-              bassBoostDb: {
-                type: Type.NUMBER,
-                description: 'Recommended low EQ bass boost in dB between -4 and 10.',
-              },
-              targetPitch: {
-                type: Type.NUMBER,
-                description: 'Recommended playback speed/tempo multiplier between 0.92 and 1.12.',
-              },
-              crossfadeDurationSec: {
-                type: Type.NUMBER,
-                description: 'Recommended crossfade duration in seconds between 2 and 6.',
-              },
-              bangerMode: {
-                type: Type.BOOLEAN,
-                description: 'True for high-energy banger, shaadi, dance, edm, or mass bass vibes.',
-              },
+        systemInstruction:
+          'You are Rintu Bit DJ AI Curator specializing in ALL full-length world & Indian music EXCEPT Marathi: ' +
+          'Global Hits, EDM/House, Hip-Hop/Rap, Latin/Reggaeton, K-Pop, Arabic/Sufi, Banger Mode, Dance, Romance, Chill, Shaadi, 90s Bollywood (Kumar Sanu, Udit Narayan, Alka Yagnik), Bhojpuri (Pawan Singh, Khesari Lal Yadav), Haryanvi (Sapna Choudhary, Masoom Sharma), Punjabi (Sidhu Moose Wala, Diljit Dosanjh, Karan Aujla, AP Dhillon, Shubh), and Tamil (Anirudh Ravichander, AR Rahman, Vijay). ' +
+          'STRICT RULE: NEVER suggest, search for, or include ANY Marathi songs, Marathi artists (e.g. Ajay-Atul, Adarsh Shinde, Sanju Rathod, Kratex, Avadhoot Gupte, Bela Shende), or Marathi albums. ' +
+          'Generate 2 to 3 crisp single-artist or focused song queries (e.g. "Pawan Singh", "Sapna Choudhary", "Kumar Sanu", "Anirudh", "Alan Walker") for clean full-track lookup.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            setTitle: {
+              type: Type.STRING,
+              description: 'Short evocative DJ set name (max 5 words).',
             },
-            required: [
-              'setTitle',
-              'djNote',
-              'recommendedMode',
-              'searchQueries',
-              'bassBoostDb',
-              'targetPitch',
-              'crossfadeDurationSec',
-              'bangerMode',
-            ],
+            djNote: {
+              type: Type.STRING,
+              description: 'One-sentence energetic DJ mixing tip or track vibe summary.',
+            },
+            recommendedMode: {
+              type: Type.STRING,
+              description:
+                'One of: banger, dance, romance, chill, shaadi, 90s, bhojpuri, haryanvi, punjabi, tamil, global, edm, hiphop, latin, kpop, arabic.',
+            },
+            searchQueries: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '2 to 3 crisp non-Marathi artist or song search queries.',
+            },
+            bassBoostDb: {
+              type: Type.NUMBER,
+              description: 'Recommended low EQ bass boost in dB between -4 and 10.',
+            },
+            targetPitch: {
+              type: Type.NUMBER,
+              description: 'Recommended playback speed/tempo multiplier between 0.92 and 1.12.',
+            },
+            crossfadeDurationSec: {
+              type: Type.NUMBER,
+              description: 'Recommended crossfade duration in seconds between 2 and 6.',
+            },
+            bangerMode: {
+              type: Type.BOOLEAN,
+              description: 'True for high-energy banger, shaadi, dance, edm, or mass bass vibes.',
+            },
           },
+          required: [
+            'setTitle',
+            'djNote',
+            'recommendedMode',
+            'searchQueries',
+            'bassBoostDb',
+            'targetPitch',
+            'crossfadeDurationSec',
+            'bangerMode',
+          ],
         },
-      });
+      };
+
+      let aiResponse;
+      const runWithTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
+        Promise.race([
+          promise,
+          new Promise<T>((_, reject) =>
+            setTimeout(() => reject(new Error('AI model timeout during high demand')), ms)
+          ),
+        ]);
+
+      try {
+        aiResponse = await runWithTimeout(
+          ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: filterPromptConfig.contents,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              systemInstruction: filterPromptConfig.systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: filterPromptConfig.responseSchema,
+            },
+          }),
+          4500
+        );
+      } catch {
+        aiResponse = await runWithTimeout(
+          ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: filterPromptConfig.contents,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+              systemInstruction: filterPromptConfig.systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: filterPromptConfig.responseSchema,
+            },
+          }),
+          4500
+        );
+      }
 
       const rawJson = (aiResponse.text ?? '{}').trim();
       const parsed = JSON.parse(rawJson) as {
@@ -671,7 +936,7 @@ async function startServer() {
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'AI DJ filter encountered an error.';
-      res.status(500).json({ error: msg });
+      res.status(503).json({ error: msg });
     }
   });
 
@@ -697,45 +962,79 @@ async function startServer() {
         ? `Currently Playing Track: "${currentTrack.title}" by ${currentTrack.artist ?? 'Unknown'} (Genre: ${currentTrack.genre ?? mode}, ~${currentTrack.bpm ?? 120} BPM). Active Mode: ${mode}. Avoid repeating: ${recentTitles.join(', ') || 'none'}.`
         : `Active DJ Mode: ${mode}. Avoid repeating: ${recentTitles.join(', ') || 'none'}. Suggest fresh, exciting non-Marathi songs for this mood.`;
 
-      const aiResponse = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
+      const suggestPromptConfig = {
         contents: contextText,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction:
-            'You are Rintu Bit DJ AI Recommender. Suggest 5 fresh, real popular Indian or global songs (Hindi, 90s, Punjabi, Bhojpuri, Haryanvi, Tamil, English Pop, EDM, Hip-Hop, Latin, K-Pop, Arabic) that pair seamlessly with the playing track or mode. ' +
-            'STRICT RULE: NEVER recommend any Marathi song or Marathi artist. ' +
-            'For each suggestion, provide a crisp searchQuery ("Song Title" or "Song Title Artist") plus a brief 1-sentence reason.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              headline: {
-                type: Type.STRING,
-                description: 'Short catchy title for these AI song picks (max 6 words).',
-              },
-              picks: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    searchQuery: {
-                      type: Type.STRING,
-                      description: 'Exact real non-Marathi song title and artist name.',
-                    },
-                    reason: {
-                      type: Type.STRING,
-                      description: 'Brief 6-12 word reason why this song fits the current vibe or BPM.',
-                    },
+        systemInstruction:
+          'You are Rintu Bit DJ AI Recommender. Suggest 5 fresh, real popular Indian or global songs (Hindi, 90s, Punjabi, Bhojpuri, Haryanvi, Tamil, English Pop, EDM, Hip-Hop, Latin, K-Pop, Arabic) that pair seamlessly with the playing track or mode. ' +
+          'STRICT RULE: NEVER recommend any Marathi song or Marathi artist. ' +
+          'For each suggestion, provide a crisp searchQuery ("Song Title" or "Song Title Artist") plus a brief 1-sentence reason.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            headline: {
+              type: Type.STRING,
+              description: 'Short catchy title for these AI song picks (max 6 words).',
+            },
+            picks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  searchQuery: {
+                    type: Type.STRING,
+                    description: 'Exact real non-Marathi song title and artist name.',
                   },
-                  required: ['searchQuery', 'reason'],
+                  reason: {
+                    type: Type.STRING,
+                    description: 'Brief 6-12 word reason why this song fits the current vibe or BPM.',
+                  },
                 },
+                required: ['searchQuery', 'reason'],
               },
             },
-            required: ['headline', 'picks'],
           },
+          required: ['headline', 'picks'],
         },
-      });
+      };
+
+      const runWithTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
+        Promise.race([
+          promise,
+          new Promise<T>((_, reject) =>
+            setTimeout(() => reject(new Error('AI model timeout during high demand')), ms)
+          ),
+        ]);
+
+      let aiResponse;
+      try {
+        aiResponse = await runWithTimeout(
+          ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: suggestPromptConfig.contents,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              systemInstruction: suggestPromptConfig.systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: suggestPromptConfig.responseSchema,
+            },
+          }),
+          4500
+        );
+      } catch {
+        aiResponse = await runWithTimeout(
+          ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: suggestPromptConfig.contents,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+              systemInstruction: suggestPromptConfig.systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: suggestPromptConfig.responseSchema,
+            },
+          }),
+          4500
+        );
+      }
 
       const rawJson = (aiResponse.text ?? '{}').trim();
       const parsed = JSON.parse(rawJson) as {
@@ -754,9 +1053,15 @@ async function startServer() {
         picks.map(async (pick) => {
           const q = (pick.searchQuery || '').trim();
           if (!q || containsMarathiMarker(q)) return null;
-          let found = await fetchSaavnFullTracks(q, mode, 5);
+          let found = (await fetchSaavnFullTracks(q, mode, 6, 1)).tracks;
           if (found.length === 0) {
-            found = await fetchAudiusFullTracks(q, mode, 4);
+            const shortQ = q.split(/\s+/).slice(0, 3).join(' ');
+            if (shortQ && shortQ !== q) {
+              found = (await fetchSaavnFullTracks(shortQ, mode, 6, 1)).tracks;
+            }
+          }
+          if (found.length === 0) {
+            found = (await fetchAudiusFullTracks(q, mode, 5, 0)).tracks;
           }
           const match = found.find((t) => !recentLower.has(t.title.toLowerCase())) || found[0];
           if (!match || isMarathiTrackMeta(match) || match.durationSec < 60) return null;

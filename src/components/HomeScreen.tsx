@@ -1,18 +1,29 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   Disc3,
   FolderDown,
   Globe,
   Headphones,
+  Loader2,
   Play,
   Search,
   Sparkles,
   Square,
 } from 'lucide-react';
 import { DJ_MODES, OFFLINE_BEAT_PACKS } from '../data/modes';
-import type { DjModeId, OfflineBeatId } from '../types/music';
+import { fetchQuickSearchSuggestions } from '../services/clientCatalog';
+import type { DjModeId, OfflineBeatId, Track } from '../types/music';
 import { containsMarathiMarker } from '../utils/marathiFilter';
+
+const HOME_SUGGESTION_CHIPS = [
+  'Arijit Singh',
+  'Sidhu Moose Wala',
+  'Pawan Singh',
+  'Kumar Sanu 90s',
+  'Sapna Choudhary',
+  'AP Dhillon',
+];
 
 interface HomeScreenProps {
   offlineCount: number;
@@ -46,9 +57,47 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 }) => {
   const [searchInput, setSearchInput] = useState('');
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [homeSuggestions, setHomeSuggestions] = useState<Track[]>([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
 
   const desiModes = DJ_MODES.filter((m) => m.category === 'desi');
   const worldModes = DJ_MODES.filter((m) => m.category === 'world');
+
+  useEffect(() => {
+    const onOutside = (e: MouseEvent) => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) {
+        setIsSearchFocused(false);
+      }
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, []);
+
+  useEffect(() => {
+    const q = searchInput.trim();
+    if (!isSearchFocused || q.length < 2 || containsMarathiMarker(q)) {
+      if (q.length < 2) setHomeSuggestions([]);
+      setIsLoadingSuggestions(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingSuggestions(true);
+    const timer = window.setTimeout(() => {
+      void fetchQuickSearchSuggestions(q, 'banger', false)
+        .then((res) => {
+          if (!cancelled) setHomeSuggestions(res);
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingSuggestions(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [searchInput, isSearchFocused]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,6 +110,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       return;
     }
     setBlockedNotice(null);
+    setIsSearchFocused(false);
     onGlobalSearch(q);
   };
 
@@ -99,11 +149,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               </p>
             </div>
 
-            {/* Integrated World Search */}
-            <div className="max-w-xl space-y-2">
+            {/* Integrated World Search with Live Suggestions */}
+            <div ref={searchWrapRef} className="relative max-w-xl space-y-2 z-30">
               <form
                 onSubmit={handleSearch}
-                className="flex flex-col sm:flex-row gap-2.5 rounded-2xl border border-white/15 bg-[#090B10]/80 p-2 backdrop-blur-md"
+                className="flex flex-col sm:flex-row gap-2.5 rounded-2xl border border-white/15 bg-[#090B10]/85 p-2 backdrop-blur-md"
               >
                 <div className="relative flex-1">
                   <Search
@@ -113,8 +163,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   <input
                     type="search"
                     value={searchInput}
+                    onFocus={() => setIsSearchFocused(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') setIsSearchFocused(false);
+                    }}
                     onChange={(e) => {
                       setSearchInput(e.target.value);
+                      setIsSearchFocused(true);
                       if (blockedNotice) setBlockedNotice(null);
                     }}
                     placeholder="Search any world or Indian song (Marathi blocked)..."
@@ -129,6 +184,74 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   Find &amp; Mix
                 </button>
               </form>
+
+              {isSearchFocused && !blockedNotice && (
+                <div className="absolute left-0 right-0 top-full mt-2 rounded-2xl border border-white/15 bg-[#12161F]/98 backdrop-blur-xl shadow-2xl p-3 space-y-2">
+                  {searchInput.trim().length < 2 ? (
+                    <div className="space-y-2">
+                      <p className="text-[11px] font-medium text-[#9CA3AF]">Popular Searches</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {HOME_SUGGESTION_CHIPS.map((chip) => (
+                          <button
+                            key={chip}
+                            type="button"
+                            onClick={() => {
+                              setSearchInput(chip);
+                              setIsSearchFocused(false);
+                              onGlobalSearch(chip);
+                            }}
+                            className="rounded-lg border border-white/10 bg-[#1A1E28] px-2.5 py-1.5 text-xs font-medium text-[#E5E7EB] hover:border-amber-500/45 hover:text-amber-300 transition-colors cursor-pointer"
+                          >
+                            {chip}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : isLoadingSuggestions && homeSuggestions.length === 0 ? (
+                    <div className="flex items-center gap-2 py-2 px-1 text-xs text-[#9CA3AF]">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" aria-hidden="true" />
+                      <span>Searching songs for &ldquo;{searchInput.trim()}&rdquo;...</span>
+                    </div>
+                  ) : homeSuggestions.length > 0 ? (
+                    <div className="space-y-1 max-h-64 overflow-y-auto">
+                      {homeSuggestions.map((track) => (
+                        <button
+                          key={`hs-${track.id}`}
+                          type="button"
+                          onClick={() => {
+                            setIsSearchFocused(false);
+                            onGlobalSearch(track.title);
+                          }}
+                          className="w-full flex items-center justify-between gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-[#1A1E28] transition-colors cursor-pointer"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <img
+                              src={
+                                track.artworkUrl ||
+                                '/src/assets/images/vinyl_cover_desi_1794994927145.jpg'
+                              }
+                              alt={track.title}
+                              referrerPolicy="no-referrer"
+                              className="h-9 w-9 rounded-lg object-cover border border-white/10 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-[#F1F3F5] truncate">
+                                {track.title}
+                              </p>
+                              <p className="text-[11px] text-[#9CA3AF] truncate">
+                                {track.artist}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="text-[11px] font-semibold text-amber-400 shrink-0">
+                            Mix Now
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              )}
 
               {blockedNotice && (
                 <p role="alert" className="text-xs font-medium text-rose-300 px-1">

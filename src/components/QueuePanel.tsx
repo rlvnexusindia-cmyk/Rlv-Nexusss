@@ -23,7 +23,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
     <aside
       id="queue"
       aria-label="Up Next DJ Setlist Queue"
-      className="rounded-2xl border border-white/8 bg-[#12161F] p-4 sm:p-5 flex flex-col"
+      className="rounded-2xl border border-white/8 bg-[#12161F]/78 backdrop-blur-xl p-4 sm:p-5 flex flex-col"
     >
       <div className="flex items-center justify-between gap-2 border-b border-white/8 pb-3.5">
         <div>

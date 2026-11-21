@@ -165,14 +165,40 @@ export const DjDeck: React.FC<DjDeckProps> = ({
   const effectiveBpm = track ? Math.round(track.bpm * deck.pitch) : 120;
   const progressPct =
     deck.duration > 0 ? Math.min(100, (deck.currentTime / deck.duration) * 100) : 0;
+  const isStageActive = deck.isPlaying || deck.isLoading;
 
   return (
     <section
       aria-label={`Deck ${deck.deckId}`}
-      className="flex h-full flex-col justify-between rounded-2xl border border-white/8 bg-[#12161F] p-4 sm:p-5"
+      className={`relative overflow-hidden flex h-full flex-col justify-between rounded-2xl border bg-[#12161F]/78 backdrop-blur-xl p-4 sm:p-5 transition-colors duration-300 ${
+        isStageActive
+          ? isDeckA
+            ? 'border-amber-500/35'
+            : 'border-sky-400/35'
+          : 'border-white/8'
+      }`}
     >
+      {/* Internal Blurred Party Glow Layer when Deck A / B is playing or loading */}
+      <div
+        aria-hidden="true"
+        className={`pointer-events-none absolute inset-0 transition-opacity duration-500 ${
+          isStageActive ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        <div
+          className={`absolute -top-16 -left-12 h-48 w-48 rounded-full blur-[65px] ${
+            isDeckA ? 'bg-amber-500/22' : 'bg-sky-400/22'
+          }`}
+        />
+        <div
+          className={`absolute -bottom-16 -right-12 h-44 w-44 rounded-full blur-[70px] ${
+            isDeckA ? 'bg-rose-500/14' : 'bg-indigo-500/18'
+          }`}
+        />
+      </div>
+
       {/* Deck Header */}
-      <div className="flex items-center justify-between gap-3 border-b border-white/8 pb-3">
+      <div className="relative z-10 flex items-center justify-between gap-3 border-b border-white/8 pb-3">
         <div className="flex items-center gap-2.5 min-w-0">
           <span className={`font-display text-base font-bold tracking-tight ${accentText}`}>
             Deck {deck.deckId}
@@ -189,17 +215,50 @@ export const DjDeck: React.FC<DjDeckProps> = ({
       </div>
 
       {/* Turntable + Track Info */}
-      <div className="my-4 flex flex-col sm:flex-row items-center gap-4 sm:gap-5">
-        {/* Spinning Vinyl Platter */}
-        <div className="relative shrink-0">
+      <div className="relative z-10 my-4 flex flex-col sm:flex-row items-center gap-4 sm:gap-5">
+        {/* Spinning Vinyl Platter with LoadingScreen-inspired Orbital Party Rings */}
+        <div className="relative shrink-0 p-2">
+          {/* Outer blurred conic party light halo */}
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute -inset-1 rounded-full blur-md transition-opacity duration-500 ${
+              isStageActive ? 'opacity-90 animate-orbit-slow' : 'opacity-0'
+            }`}
+            style={{
+              background: isDeckA
+                ? 'conic-gradient(from 0deg, rgba(245,158,11,0.55), transparent 35%, rgba(251,113,133,0.45), transparent 75%, rgba(245,158,11,0.55))'
+                : 'conic-gradient(from 0deg, rgba(56,189,248,0.55), transparent 35%, rgba(167,139,250,0.45), transparent 75%, rgba(56,189,248,0.55))',
+            }}
+          />
+
+          {/* Counter-rotating frosted dashed club ring */}
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 rounded-full border border-dashed transition-opacity duration-300 ${
+              isStageActive
+                ? `${isDeckA ? 'border-amber-400/50' : 'border-sky-400/50'} opacity-100 animate-orbit-reverse`
+                : 'border-transparent opacity-0'
+            }`}
+          />
+
+          {/* Pulsing outer shockwave border */}
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-1 rounded-full border transition-opacity duration-300 ${
+              isStageActive
+                ? `${isDeckA ? 'border-amber-500/45' : 'border-sky-400/45'} opacity-100 animate-party-ring`
+                : 'border-transparent opacity-0'
+            }`}
+          />
+
           <div
             ref={vinylHaloRef}
-            className={`relative flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center rounded-full border-2 ${ringBorder} bg-[#090B10] shadow-lg transition-shadow duration-75 ${
-              deck.isPlaying ? 'animate-vinyl' : 'animate-vinyl-paused'
+            className={`relative flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center rounded-full border-2 ${ringBorder} bg-[#090B10]/90 shadow-lg transition-shadow duration-75 ${
+              isStageActive ? 'animate-vinyl' : 'animate-vinyl-paused'
             }`}
           >
-            <div className="absolute inset-2 rounded-full border border-white/8" />
-            <div className="absolute inset-4 rounded-full border border-white/6" />
+            <div className="absolute inset-2 rounded-full border border-white/12" />
+            <div className="absolute inset-4 rounded-full border border-white/8" />
             <div className="relative h-14 w-14 sm:h-16 sm:w-16 overflow-hidden rounded-full border border-white/20 bg-[#1A1E28]">
               {track?.artworkUrl && !imgFailed ? (
                 <img
@@ -217,7 +276,13 @@ export const DjDeck: React.FC<DjDeckProps> = ({
                 />
               )}
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className="h-2.5 w-2.5 rounded-full bg-[#090B10] border border-white/40" />
+                {deck.isLoading ? (
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#090B10]/75 backdrop-blur-sm border border-white/25">
+                    <Loader2 className={`h-3.5 w-3.5 animate-spin ${accentText}`} aria-hidden="true" />
+                  </span>
+                ) : (
+                  <span className="h-2.5 w-2.5 rounded-full bg-[#090B10] border border-white/40" />
+                )}
               </div>
             </div>
           </div>
