@@ -3,16 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rintu Bit DJ – AI World &amp; Desi Music Mixer</title>
+    <title>Rintu Bit DJ – Play, Download MP3 Songs, Lyrics &amp; DJ Mix</title>
     <meta
       name="description"
-      content="Mix global hits, 90s Bollywood, Bhojpuri, Haryanvi, Punjabi, Tamil, and EDM tracks live with AI smart curation and offline playback on Rintu Bit DJ."
+      content="Search any song by title, artist, or lyrics. Play full HD tracks, download MP3 &amp; M4A music offline, and mix 8D &amp; Auto DJ sets free on Rintu Bit DJ."
     />
     <meta
       name="keywords"
-      content="Rintu Bit DJ, online DJ mixer, dual deck DJ console, Bhojpuri DJ songs, Haryanvi hits, Punjabi banger, 90s Bollywood hits, Tamil mass songs, AI music filter, RLV Nexus"
+      content="play songs online, download music song, free mp3 song download, song lyrics search, listen hindi songs, bollywood songs download, bhojpuri dj song, punjabi songs, haryanvi dj hits, 90s hindi songs, tamil songs, edm music player, 8d audio converter, auto dj mixer, online music player, Rintu Bit DJ, RLV Nexus"
     />
-    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="Rintu Bit DJ" />
+    <meta name="subject" content="Online Music Player, Song Search, Lyrics Finder, MP3 Download &amp; Dual-Deck DJ Studio" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
     <meta name="google-site-verification" content="xF4gANLuSNKMa2uhK8JYJSrdEe_C7HXrswisKj1ZmGU" />
     <meta name="author" content="RLV Nexus" />
     <meta name="theme-color" content="#090B10" />
@@ -20,40 +22,86 @@
     <!-- OpenGraph Social Card -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Rintu Bit DJ" />
-    <meta property="og:title" content="Rintu Bit DJ – AI World &amp; Desi Music Mixer" />
+    <meta property="og:title" content="Rintu Bit DJ – Play, Download MP3 Songs, Lyrics &amp; DJ Mix" />
     <meta
       property="og:description"
-      content="Mix global hits, 90s Bollywood, Bhojpuri, Haryanvi, Punjabi, Tamil, and EDM tracks live with AI smart curation and offline playback."
+      content="Search any song by title, artist, or lyrics. Stream full HD music, download songs for offline listening, and mix 8D &amp; Auto DJ sets."
     />
     <meta property="og:image" content="/src/assets/images/dj_console_studio_1794994927425.jpg" />
 
     <!-- Twitter / X Card -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Rintu Bit DJ – AI World &amp; Desi Music Mixer" />
+    <meta name="twitter:title" content="Rintu Bit DJ – Play, Download MP3 Songs, Lyrics &amp; DJ Mix" />
     <meta
       name="twitter:description"
-      content="Dual-deck Web Audio DJ mixer with AI song filtering, regional Indian &amp; global hits, and offline playback by RLV Nexus."
+      content="Play full songs online, search by song name or lyrics, download MP3/M4A music offline, and mix live on Rintu Bit DJ by RLV Nexus."
     />
     <meta name="twitter:image" content="/src/assets/images/dj_console_studio_1794994927425.jpg" />
 
-    <!-- Schema.org Structured Data -->
+    <!-- Schema.org Structured Data (WebSite SearchAction + WebApplication + FAQPage) -->
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
-        "@type": "WebApplication",
-        "name": "Rintu Bit DJ",
-        "applicationCategory": "MultimediaApplication",
-        "operatingSystem": "All",
-        "description": "Mix global hits, 90s Bollywood, Bhojpuri, Haryanvi, Punjabi, Tamil, and EDM tracks live with AI smart curation and offline playback on Rintu Bit DJ.",
-        "creator": {
-          "@type": "Organization",
-          "name": "RLV Nexus"
-        },
-        "offers": {
-          "@type": "Offer",
-          "price": "0",
-          "priceCurrency": "USD"
-        }
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "name": "Rintu Bit DJ",
+            "alternateName": ["Rintu Bit DJ Music", "SwarMix DJ"],
+            "description": "Search songs by title, artist, or lyrics, play full-length HD music, and download tracks offline.",
+            "potentialAction": {
+              "@type": "SearchAction",
+              "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "/?q={search_term_string}"
+              },
+              "query-input": "required name=search_term_string"
+            }
+          },
+          {
+            "@type": "WebApplication",
+            "name": "Rintu Bit DJ",
+            "applicationCategory": "MultimediaApplication",
+            "operatingSystem": "All",
+            "description": "Play and download HD Hindi, 90s Bollywood, Bhojpuri, Haryanvi, Punjabi, Tamil, EDM, Hip-Hop, Latin, K-Pop, and World songs online with dual-deck 8D DJ mixing and offline storage.",
+            "featureList": [
+              "Search 5,000+ songs by title, artist, or lyrics",
+              "Play full-length HD music online free",
+              "Download music songs to device or save in offline vault",
+              "Dual-deck DJ mixer with Auto DJ 2-song cut mode and 8D spatial audio",
+              "AI Smart Filter and automatic song recommendations"
+            ],
+            "creator": {
+              "@type": "Organization",
+              "name": "RLV Nexus"
+            },
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "How can I play or download a music song on Rintu Bit DJ?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Search any song name, artist, or lyric phrase in the search bar to find full-length tracks, then click Play Now to stream instantly or Download / Save Offline to keep the audio file on your device."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can I search songs by lyrics or mood on Rintu Bit DJ?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Enter song lyrics, movie names, artist names, or use the AI Smart Filter to discover and play matching Hindi, 90s, Punjabi, Bhojpuri, Haryanvi, Tamil, EDM, and Global hits."
+                }
+              }
+            ]
+          }
+        ]
       }
     </script>
 

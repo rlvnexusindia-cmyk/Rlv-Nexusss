@@ -104,8 +104,32 @@
   </url>
   <url>
     <loc>https://rintudjmix.vercel.app/?genre=arabic</loc>
-    <lastmod>2026-11-18</lastmod>
+    <lastmod>2026-11-20</lastmod>
     <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rintudjmix.vercel.app/?q=hindi+songs</loc>
+    <lastmod>2026-11-20</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rintudjmix.vercel.app/?q=arijit+singh</loc>
+    <lastmod>2026-11-20</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rintudjmix.vercel.app/?q=bhojpuri+dj</loc>
+    <lastmod>2026-11-20</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://rintudjmix.vercel.app/?q=punjabi+hits</loc>
+    <lastmod>2026-11-20</lastmod>
+    <changefreq>daily</changefreq>
     <priority>0.8</priority>
   </url>
 </urlset>

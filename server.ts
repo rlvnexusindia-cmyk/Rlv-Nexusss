@@ -1090,6 +1090,89 @@ async function startServer() {
     }
   });
 
+  // 4b. Persistent Visitor Statistics (Total Visitors & Today's Visitors)
+  const visitorsDir = path.resolve(__dirname, 'data');
+  const visitorsFile = path.join(visitorsDir, 'visitors.json');
+
+  interface VisitorRecord {
+    totalVisitors: number;
+    todayDate: string;
+    todayVisitors: number;
+  }
+
+  const getTodayKey = () => new Date().toISOString().slice(0, 10);
+
+  const loadVisitorRecord = (): VisitorRecord => {
+    const today = getTodayKey();
+    try {
+      if (fs.existsSync(visitorsFile)) {
+        const raw = fs.readFileSync(visitorsFile, 'utf8');
+        const parsed = JSON.parse(raw) as Partial<VisitorRecord>;
+        const total = typeof parsed.totalVisitors === 'number' && parsed.totalVisitors >= 0
+          ? parsed.totalVisitors
+          : 0;
+        const storedDate = typeof parsed.todayDate === 'string' ? parsed.todayDate : today;
+        const todayCount =
+          storedDate === today && typeof parsed.todayVisitors === 'number' && parsed.todayVisitors >= 0
+            ? parsed.todayVisitors
+            : 0;
+        return { totalVisitors: total, todayDate: today, todayVisitors: todayCount };
+      }
+    } catch {
+      // Recover cleanly if file is corrupted or inaccessible
+    }
+    return { totalVisitors: 0, todayDate: today, todayVisitors: 0 };
+  };
+
+  let visitorStats: VisitorRecord = loadVisitorRecord();
+
+  const persistVisitorRecord = (record: VisitorRecord) => {
+    try {
+      if (!fs.existsSync(visitorsDir)) {
+        fs.mkdirSync(visitorsDir, { recursive: true });
+      }
+      fs.writeFileSync(visitorsFile, JSON.stringify(record, null, 2), 'utf8');
+    } catch {
+      // Ignore write errors in read-only runtimes; in-memory count stays accurate
+    }
+  };
+
+  app.get('/api/visitors', (_req: Request, res: Response) => {
+    const today = getTodayKey();
+    if (visitorStats.todayDate !== today) {
+      visitorStats = {
+        totalVisitors: visitorStats.totalVisitors,
+        todayDate: today,
+        todayVisitors: 0,
+      };
+      persistVisitorRecord(visitorStats);
+    }
+    res.json(visitorStats);
+  });
+
+  app.post('/api/visitors/hit', (req: Request, res: Response) => {
+    const today = getTodayKey();
+    if (visitorStats.todayDate !== today) {
+      visitorStats = {
+        totalVisitors: visitorStats.totalVisitors,
+        todayDate: today,
+        todayVisitors: 0,
+      };
+    }
+
+    const shouldIncrement = req.body?.countVisit !== false;
+    if (shouldIncrement) {
+      visitorStats = {
+        totalVisitors: visitorStats.totalVisitors + 1,
+        todayDate: today,
+        todayVisitors: visitorStats.todayVisitors + 1,
+      };
+      persistVisitorRecord(visitorStats);
+    }
+
+    res.json(visitorStats);
+  });
+
   // 5. Dynamic SEO Sitemap & Robots.txt (registered before SPA fallback)
   const resolvePublicBaseUrl = (req: Request): string => {
     const protoHeader = req.headers['x-forwarded-proto'];
@@ -1126,6 +1209,16 @@ async function startServer() {
     const baseUrl = resolvePublicBaseUrl(req);
     const today = new Date().toISOString().slice(0, 10);
     const modes = Object.keys(MODE_SEARCH_QUERIES);
+    const seoDiscoveryQueries = [
+      'hindi songs',
+      'arijit singh',
+      '90s bollywood',
+      'bhojpuri dj',
+      'punjabi hits',
+      'haryanvi dj',
+      'tamil songs',
+      'edm remix',
+    ];
 
     const urls: Array<{ loc: string; priority: string; changefreq: string }> = [
       { loc: `${baseUrl}/`, priority: '1.0', changefreq: 'daily' },
@@ -1134,6 +1227,11 @@ async function startServer() {
         loc: `${baseUrl}/?genre=${encodeURIComponent(m)}`,
         priority: '0.8',
         changefreq: 'weekly',
+      })),
+      ...seoDiscoveryQueries.map((q) => ({
+        loc: `${baseUrl}/?q=${encodeURIComponent(q)}`,
+        priority: '0.8',
+        changefreq: 'daily',
       })),
     ];
 

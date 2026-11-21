@@ -66,20 +66,23 @@ function createInitialDeck(deckId: DeckId): DeckState {
   };
 }
 
-function getInitialUrlState(): { view: AppView; mode: DjModeId } {
+function getInitialUrlState(): { view: AppView; mode: DjModeId; query: string } {
   if (typeof window === 'undefined') {
-    return { view: 'home', mode: 'banger' };
+    return { view: 'home', mode: 'banger', query: '' };
   }
   const params = new URLSearchParams(window.location.search);
   const genreParam = params.get('genre') as DjModeId | null;
   const viewParam = params.get('view');
+  const queryParam = (params.get('q') || '').trim();
   const validMode =
     genreParam && DJ_MODES.some((m) => m.id === genreParam) ? genreParam : 'banger';
   const view: AppView =
-    viewParam === 'console' || (genreParam && DJ_MODES.some((m) => m.id === genreParam))
+    viewParam === 'console' ||
+    Boolean(queryParam) ||
+    (genreParam && DJ_MODES.some((m) => m.id === genreParam))
       ? 'console'
       : 'home';
-  return { view, mode: validMode };
+  return { view, mode: validMode, query: queryParam };
 }
 
 export default function App() {
@@ -110,7 +113,7 @@ export default function App() {
 
   const [activeMode, setActiveMode] = useState<DjModeId>(initialUrlState.mode);
   const [showOfflineTab, setShowOfflineTab] = useState<boolean>(false);
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>(initialUrlState.query);
   const [caseSensitiveSearch, setCaseSensitiveSearch] = useState<boolean>(false);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [totalAvailableTracks, setTotalAvailableTracks] = useState<number>(0);
@@ -123,6 +126,10 @@ export default function App() {
 
   const [queue, setQueue] = useState<Track[]>([]);
   const [inspectedTrack, setInspectedTrack] = useState<Track | null>(null);
+  const [visitorStats, setVisitorStats] = useState<{
+    totalVisitors: number;
+    todayVisitors: number;
+  } | null>(null);
 
   // Offline Vault & Built-in Synth Beat state
   const [offlineTracks, setOfflineTracks] = useState<OfflineTrack[]>([]);
@@ -594,7 +601,101 @@ export default function App() {
       document.head.appendChild(ogUrlMeta);
     }
     ogUrlMeta.content = canonicalUrl;
+
+    // Record & fetch real Total Visitors & Today's Visitors (with static fallback)
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const sessionFlag = `rintu_visit_${todayKey}`;
+    let shouldCountVisit = true;
+    try {
+      shouldCountVisit = !sessionStorage.getItem(sessionFlag);
+      if (shouldCountVisit) sessionStorage.setItem(sessionFlag, '1');
+    } catch {
+      shouldCountVisit = true;
+    }
+
+    void (async () => {
+      try {
+        const res = await fetch('/api/visitors/hit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ countVisit: shouldCountVisit }),
+        });
+        const data = await safeParseApiJson<{
+          totalVisitors?: number;
+          todayVisitors?: number;
+        }>(res);
+        if (
+          res.ok &&
+          data &&
+          typeof data.totalVisitors === 'number' &&
+          typeof data.todayVisitors === 'number'
+        ) {
+          setVisitorStats({
+            totalVisitors: data.totalVisitors,
+            todayVisitors: data.todayVisitors,
+          });
+          return;
+        }
+      } catch {
+        // Static-hosting fallback below
+      }
+
+      try {
+        const raw = localStorage.getItem('rintu_visitor_stats');
+        const parsed = raw
+          ? (JSON.parse(raw) as { totalVisitors?: number; todayDate?: string; todayVisitors?: number })
+          : {};
+        const prevTotal = typeof parsed.totalVisitors === 'number' ? parsed.totalVisitors : 0;
+        const prevToday =
+          parsed.todayDate === todayKey && typeof parsed.todayVisitors === 'number'
+            ? parsed.todayVisitors
+            : 0;
+        const next = {
+          totalVisitors: shouldCountVisit ? prevTotal + 1 : Math.max(1, prevTotal),
+          todayDate: todayKey,
+          todayVisitors: shouldCountVisit ? prevToday + 1 : Math.max(1, prevToday),
+        };
+        localStorage.setItem('rintu_visitor_stats', JSON.stringify(next));
+        setVisitorStats({
+          totalVisitors: next.totalVisitors,
+          todayVisitors: next.todayVisitors,
+        });
+      } catch {
+        setVisitorStats({ totalVisitors: 1, todayVisitors: 1 });
+      }
+    })();
   }, []);
+
+  // Dynamically update document title & meta description for searched songs, genres, and lyrics discovery
+  useEffect(() => {
+    const modeObj = DJ_MODES.find((m) => m.id === activeMode);
+    let nextTitle = 'Rintu Bit DJ – Play, Download MP3 Songs, Lyrics & DJ Mix';
+    let nextDesc =
+      'Search any song by title, artist, or lyrics. Play full HD tracks, download MP3 & M4A music offline, and mix 8D & Auto DJ sets free on Rintu Bit DJ.';
+
+    if (inspectedTrack) {
+      nextTitle = `${inspectedTrack.title} – ${inspectedTrack.artist} | Play & Download | Rintu Bit DJ`;
+      nextDesc = `Play & download ${inspectedTrack.title} by ${inspectedTrack.artist} (${inspectedTrack.album || 'Single'}). Stream full audio, view cover details, and mix live on Rintu Bit DJ.`;
+    } else if (searchQuery.trim()) {
+      const q = searchQuery.trim();
+      nextTitle = `${q} Songs Play & Download | Rintu Bit DJ`;
+      nextDesc = `Play and download full MP3 & HD songs matching "${q}". Search by song title, artist, or lyrics free on Rintu Bit DJ.`;
+    } else if (activeView === 'console' && modeObj) {
+      nextTitle = `${modeObj.label} Songs & Live DJ Mix | Rintu Bit DJ`;
+      nextDesc = `Stream and download ${modeObj.label} songs (${modeObj.tagline}) with AI smart suggestions, Auto DJ cuts, and offline vault on Rintu Bit DJ.`;
+    }
+
+    document.title = nextTitle;
+    const updateMeta = (selector: string, val: string) => {
+      const el = document.querySelector<HTMLMetaElement>(selector);
+      if (el) el.content = val;
+    };
+    updateMeta('meta[name="description"]', nextDesc);
+    updateMeta('meta[property="og:title"]', nextTitle);
+    updateMeta('meta[property="og:description"]', nextDesc);
+    updateMeta('meta[name="twitter:title"]', nextTitle);
+    updateMeta('meta[name="twitter:description"]', nextDesc);
+  }, [activeMode, activeView, inspectedTrack, searchQuery]);
 
   const fetchCatalogPageBatch = useCallback(
     async (
@@ -863,7 +964,7 @@ export default function App() {
   }, [activeMode, caseSensitiveSearch, searchQuery, streamCatalogWaves]);
 
   useEffect(() => {
-    void fetchTracks(initialUrlState.mode, '', true, false);
+    void fetchTracks(initialUrlState.mode, initialUrlState.query, true, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1756,9 +1857,32 @@ export default function App() {
             </button>
           </nav>
 
-          <p className="text-xs text-[#6B7280]">
-            © {new Date().getFullYear()} RLV Nexus. All rights reserved.
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
+            {visitorStats && (
+              <div
+                aria-label="Website visitor statistics"
+                className="flex items-center gap-4 sm:border-l sm:border-white/10 sm:pl-4 text-xs"
+              >
+                <div>
+                  <span className="text-[#9CA3AF]">Today&apos;s Visitors</span>
+                  <p className="font-mono-tabular text-sm font-semibold text-amber-400">
+                    {visitorStats.todayVisitors.toLocaleString()}
+                  </p>
+                </div>
+                <div className="h-6 w-px bg-white/10" aria-hidden="true" />
+                <div>
+                  <span className="text-[#9CA3AF]">Total Visitors</span>
+                  <p className="font-mono-tabular text-sm font-semibold text-[#F1F3F5]">
+                    {visitorStats.totalVisitors.toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs text-[#6B7280]">
+              © {new Date().getFullYear()} RLV Nexus. All rights reserved.
+            </p>
+          </div>
         </div>
       </footer>
 

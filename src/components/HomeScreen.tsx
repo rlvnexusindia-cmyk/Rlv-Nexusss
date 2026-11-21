@@ -346,34 +346,34 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       >
         <div className="space-y-1">
           <p className="font-display text-sm font-semibold text-[#F1F3F5]">
-            01. Dual-Deck 3-Band EQ
+            01. Play &amp; Mix Full Songs
           </p>
           <p className="text-xs leading-relaxed text-[#9CA3AF]">
-            Real-time Low, Mid, High shelves, LPF/HPF sweep, pitch control, and equal-power crossfader.
+            Stream full-length HD music on dual DJ decks with 3-band EQ, 8D audio, and 2-song Auto DJ cuts.
           </p>
         </div>
         <div className="space-y-1">
           <p className="font-display text-sm font-semibold text-[#F1F3F5]">
-            02. AI Smart Set Curator
+            02. Search by Song or Lyrics
           </p>
           <p className="text-xs leading-relaxed text-[#9CA3AF]">
-            Filter tracks by Hinglish or English prompts and get AI-matched next track suggestions.
+            Find 5,000+ songs instantly by track title, artist, movie, mood, or remembered song lyrics.
           </p>
         </div>
         <div className="space-y-1">
           <p className="font-display text-sm font-semibold text-[#F1F3F5]">
-            03. Global &amp; Desi Catalog
+            03. Download &amp; Offline Vault
           </p>
           <p className="text-xs leading-relaxed text-[#9CA3AF]">
-            16 curated genres from 90s Bollywood and Bhojpuri to Global EDM and K-Pop, excluding Marathi.
+            Download music songs directly to your device or save full tracks for zero-internet playback.
           </p>
         </div>
         <div className="space-y-1">
           <p className="font-display text-sm font-semibold text-[#F1F3F5]">
-            04. Offline Vault &amp; Synth Beats
+            04. Global &amp; Desi Catalog
           </p>
           <p className="text-xs leading-relaxed text-[#9CA3AF]">
-            Save audio for offline mixing, download to device, or jam with built-in zero-internet beats.
+            Hindi, 90s Bollywood, Bhojpuri, Punjabi, Haryanvi, Tamil, EDM &amp; Global hits (Marathi excluded).
           </p>
         </div>
       </section>
